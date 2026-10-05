@@ -1,0 +1,17 @@
+{
+  "healthchecks": {
+    "web": [
+      {
+        "type": "startup",
+        "name": "api health",
+        "description": "GET /api/health answers 200",
+        "path": "/api/health",
+        "port": 8000,
+        "initialDelay": 5,
+        "attempts": 10,
+        "wait": 3,
+        "timeout": 5
+      }
+    ]
+  }
+}
