@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { TransactionDialog } from '@/components/transaction-dialog'
 import { currencies, groups, payees } from '@/lib/api'
 import { renderWithProviders, t } from '@/test/utils'
-import type { Account, RecurringTransaction } from '@/types'
+import type { Account, RecurringTransaction, Transaction } from '@/types'
 
 vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({ user: { preferences: { currency_display: 'USD' } } }),
@@ -152,4 +152,39 @@ it('forgets a save variant the browser blocked, so a later plain Save just saves
 
   expect(onSave).toHaveBeenCalledTimes(1)
   expect(onSave.mock.calls[0][4]).toBe('save')
+})
+
+it('loads a negative debit as a Refund with a positive amount', async () => {
+  vi.spyOn(currencies, 'list').mockResolvedValue([])
+  vi.spyOn(payees, 'list').mockResolvedValue([])
+  vi.spyOn(groups, 'list').mockResolvedValue([])
+  const refund = {
+    id: 'tx-refund',
+    description: 'Store refund',
+    amount: -472.46,
+    currency: 'USD',
+    date: '2026-03-08',
+    type: 'debit',
+    source: 'manual',
+    status: 'posted',
+    splits: [],
+  } as unknown as Transaction
+
+  renderWithProviders(
+    <TransactionDialog
+      open
+      onClose={vi.fn()}
+      transaction={refund}
+      categories={[]}
+      categoryGroups={[]}
+      accounts={[]}
+      onSave={vi.fn()}
+      loading={false}
+      error={null}
+    />,
+  )
+
+  expect(await screen.findByDisplayValue('Store refund')).toBeInTheDocument()
+  expect(screen.getByDisplayValue('472.46')).toBeInTheDocument()
+  expect(screen.getByDisplayValue(t('transactions.refund'))).toBeInTheDocument()
 })

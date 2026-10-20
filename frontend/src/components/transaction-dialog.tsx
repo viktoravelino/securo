@@ -41,6 +41,7 @@ import { RuleDialog, type RuleDialogInitialData } from '@/components/rule-dialog
 import { TransactionAttachments } from '@/components/transaction-attachments'
 import type { AttachmentPreview } from '@/components/transaction-attachments'
 import { TransactionSplitsSection } from '@/components/transaction-splits-section'
+import { formAmount, storedAmount, transactionKind, typeForKind, type TransactionKind } from '@/lib/transaction-direction'
 import { buildInstallmentSeriesInput, hasNonStatusChange, isManualInstallmentSeriesRow } from '@/lib/installment-series'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import type { Transaction, RecurringTransaction, TransactionSplitsInput, TransactionEditPayload, InstallmentSeriesInput, TransactionApplyScope, CategoryGroup, Category, Rule, RuleCondition, RuleConditionNode } from '@/types'
@@ -444,11 +445,14 @@ function TransactionForm({
   // so seeds from stored numbers go through formatAmountInput — a raw
   // toString() would read back through parseAmountInput with the dot taken
   // for a thousands separator.
+  // A negative debit (refund / repayment) is edited as Type "Refund" with a
+  // positive amount; it is stored back as a negative debit on save.
+  const seedDirection = seed?.amount != null ? { type: seed.type ?? 'debit', amount: seed.amount } : null
   const [amount, setAmount] = useState(
-    seed?.amount != null ? formatAmountInput(seed.amount, displayLocale, 8) : ''
+    seedDirection ? formatAmountInput(formAmount(seedDirection), displayLocale, 8) : ''
   )
   const [date, setDate] = useState(seed?.date ?? localDateString())
-  const [type, setType] = useState<'debit' | 'credit'>(seed?.type ?? 'debit')
+  const [kind, setKind] = useState<TransactionKind>(seedDirection ? transactionKind(seedDirection) : 'expense')
   const [status, setStatus] = useState<'posted' | 'pending'>(seed?.status ?? 'posted')
   // Opened from an account page, start in that account's currency.
   const [currency, setCurrency] = useState(
@@ -464,7 +468,13 @@ function TransactionForm({
   // when the selected account is a credit card.
   const [effectiveBillDate, setEffectiveBillDate] = useState(seed?.effective_bill_date ?? '')
   const [convertedAmount, setConvertedAmount] = useState(
-    seed?.amount_primary != null ? formatAmountInput(seed.amount_primary, displayLocale, 8) : ''
+    seed?.amount_primary != null
+      ? formatAmountInput(
+          kind === 'refund' ? Math.abs(Number(seed.amount_primary)) : seed.amount_primary,
+          displayLocale,
+          8,
+        )
+      : ''
   )
   const [fxRate, setFxRate] = useState(
     seed?.fx_rate_used != null ? formatAmountInput(seed.fx_rate_used, displayLocale, 8) : ''
@@ -780,7 +790,7 @@ function TransactionForm({
           return
         }
         if (showConversion && parsedConverted != null) {
-          fxFields.amount_primary = parsedConverted
+          fxFields.amount_primary = storedAmount(kind, parsedConverted)
         }
         if (showConversion && parsedFxRate != null) {
           fxFields.fx_rate_used = parsedFxRate
@@ -810,6 +820,8 @@ function TransactionForm({
         const pnlExclusionPayload = transaction
           ? { exclude_from_pnl: excludeFromReports }
           : {}
+        const type = typeForKind(kind)
+        const storedParsedAmount = parsedAmount != null ? storedAmount(kind, parsedAmount) : undefined
         const txData = isSynced
           ? {
               ...(description !== transaction?.description ? { description } : {}),
@@ -823,7 +835,7 @@ function TransactionForm({
             } as TransactionEditPayload
           : {
               description,
-              amount: parsedAmount ?? undefined,
+              amount: storedParsedAmount,
               date,
               type,
               currency,
@@ -849,7 +861,7 @@ function TransactionForm({
               categoryId,
               payeeId,
               description,
-              amount: parsedAmount,
+              amount: storedAmount(kind, parsedAmount),
               date,
               type,
               currency,
@@ -1143,12 +1155,13 @@ function TransactionForm({
           <Label>{t('transactions.type')}</Label>
           <select
             className="w-full border border-border rounded-md px-3 py-2 text-sm bg-card disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-ring/30 focus-visible:ring-[2px]"
-            value={type}
-            onChange={(e) => setType(e.target.value as 'debit' | 'credit')}
+            value={kind}
+            onChange={(e) => setKind(e.target.value as TransactionKind)}
             disabled={isSynced}
           >
-            <option value="debit">{t('transactions.expense')}</option>
-            <option value="credit">{t('transactions.income')}</option>
+            <option value="expense">{t('transactions.expense')}</option>
+            <option value="income">{t('transactions.income')}</option>
+            <option value="refund">{t('transactions.refund')}</option>
           </select>
         </div>
         <div className="space-y-2">

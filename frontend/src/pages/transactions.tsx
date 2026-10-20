@@ -67,7 +67,7 @@ import { useWorkspace } from '@/contexts/workspace-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
 import { formatCurrency } from '@/lib/format'
 import { shouldShowPendingBadge } from '@/lib/transaction-status'
-import { isInflow, signedAmount } from '@/lib/transaction-direction'
+import { isInflow, signedAmount, transactionKind } from '@/lib/transaction-direction'
 
 type TransactionUpdatePayload = TransactionEditPayload & {
   apply_to_transfer_pair?: boolean
@@ -1318,7 +1318,11 @@ export default function TransactionsPage() {
         return (
           <TableCell key={col.id} style={widthStyle} className={`${baseClass} text-sm`}>
             <span className={tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}>
-              {tx.type === 'credit' ? t('transactions.typeIncome') : t('transactions.typeExpense')}
+              {{
+                income: t('transactions.typeIncome'),
+                expense: t('transactions.typeExpense'),
+                refund: t('transactions.typeRefund'),
+              }[transactionKind(tx)]}
             </span>
           </TableCell>
         )
