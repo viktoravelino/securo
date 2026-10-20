@@ -56,15 +56,18 @@ async def compute_balances(
     # Splits — each non-self member's share of an owner-paid transaction
     # is what they owe the self member.
     splits_result = await session.execute(
-        select(TransactionSplit, Transaction.currency)
+        select(TransactionSplit, Transaction.currency, Transaction.amount)
         .join(Transaction, TransactionSplit.transaction_id == Transaction.id)
         .join(GroupMember, TransactionSplit.group_member_id == GroupMember.id)
         .where(GroupMember.group_id == group_id)
     )
-    for split, currency in splits_result.all():
+    for split, currency, parent_amount in splits_result.all():
         if self_member is not None and split.group_member_id == self_member.id:
             continue
-        totals[split.group_member_id][currency] += Decimal(str(split.share_amount))
+        # Shares are stored as magnitudes; a negative parent (a refund) is money
+        # back, so it reduces what the member owes (mirrors signed_share_amount).
+        share = Decimal(str(split.share_amount))
+        totals[split.group_member_id][currency] += -share if parent_amount < 0 else share
 
     # Settlements — adjust the pairwise balance with the self member.
     if self_member is not None:

@@ -250,6 +250,21 @@ def counts_as_user_pnl():
     )
 
 
+def signed_share_amount():
+    """A split share carrying its parent's sign.
+
+    Shares are stored as positive magnitudes (split_service), but a debit with
+    a negative amount (a repayment) is money in, so its shares must offset
+    spending in the opposite direction. Aggregations sum this instead of the
+    raw `share_amount`."""
+    from app.models.transaction_split import TransactionSplit
+
+    return case(
+        (Transaction.amount < 0, -TransactionSplit.share_amount),
+        else_=TransactionSplit.share_amount,
+    )
+
+
 async def owner_split_offset_pnl(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -290,13 +305,13 @@ async def owner_split_offset_pnl(
             Transaction.currency,
             func.sum(
                 case(
-                    (Transaction.type == "credit", TransactionSplit.share_amount),
+                    (Transaction.type == "credit", signed_share_amount()),
                     else_=0,
                 )
             ),
             func.sum(
                 case(
-                    (Transaction.type == "debit", TransactionSplit.share_amount),
+                    (Transaction.type == "debit", signed_share_amount()),
                     else_=0,
                 )
             ),
@@ -378,7 +393,7 @@ async def owner_split_offset_by_category(
         select(
             Transaction.category_id,
             Transaction.currency,
-            func.sum(TransactionSplit.share_amount),
+            func.sum(signed_share_amount()),
         )
         .join(Transaction, TransactionSplit.transaction_id == Transaction.id)
         .where(
@@ -458,13 +473,13 @@ async def viewer_shared_pnl(
             Transaction.currency,
             func.sum(
                 case(
-                    (Transaction.type == "credit", TransactionSplit.share_amount),
+                    (Transaction.type == "credit", signed_share_amount()),
                     else_=0,
                 )
             ),
             func.sum(
                 case(
-                    (Transaction.type == "debit", TransactionSplit.share_amount),
+                    (Transaction.type == "debit", signed_share_amount()),
                     else_=0,
                 )
             ),
@@ -546,7 +561,7 @@ async def viewer_shared_spending_by_category(
         select(
             Transaction.category_id,
             Transaction.currency,
-            func.sum(TransactionSplit.share_amount),
+            func.sum(signed_share_amount()),
         )
         .join(Transaction, TransactionSplit.transaction_id == Transaction.id)
         .where(

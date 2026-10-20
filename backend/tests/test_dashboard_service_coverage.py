@@ -603,3 +603,36 @@ async def test_balance_at_multi_currency_conversion(session, test_user, test_wor
     total = await _balance_at(session, test_workspace.id, today, primary_currency_hint="BRL")
     # 500 BRL + (100 USD * 5.0 = 500 BRL) = 1000
     assert total == pytest.approx(1000.0, abs=5.0)
+
+
+@pytest.mark.asyncio
+async def test_monthly_trend_nets_negative_debit(session, test_user, test_workspace):
+    await _register_sqlite_to_char(session)
+    month_start = date.today().replace(day=1)
+    acc = await _make_account(session, test_user.id, test_workspace.id, currency="BRL")
+    for amount in (314.97, 314.97, -472.46):
+        await _add_txn(
+            session, test_user.id, acc.id, test_workspace.id, amount, "debit",
+            month_start, amount_primary=amount,
+        )
+
+    trends = await get_monthly_trend(session, test_workspace.id, test_user.id, months=6)
+    current = next(t for t in trends if t.month == month_start.strftime("%Y-%m"))
+    assert current.expenses == pytest.approx(157.48)
+
+
+@pytest.mark.asyncio
+async def test_monthly_trend_nets_pending_negative_debit(session, test_user, test_workspace):
+    """The trend's forecast rows are signed: pending 314.97 x2 and -472.46 give 157.48."""
+    await _register_sqlite_to_char(session)
+    month_start = date.today().replace(day=1)
+    acc = await _make_account(session, test_user.id, test_workspace.id, currency="BRL")
+    for amount in (314.97, 314.97, -472.46):
+        await _add_txn(
+            session, test_user.id, acc.id, test_workspace.id, amount, "debit",
+            month_start, amount_primary=amount, status="pending",
+        )
+
+    trends = await get_monthly_trend(session, test_workspace.id, test_user.id, months=6)
+    current = next(t for t in trends if t.month == month_start.strftime("%Y-%m"))
+    assert current.expenses == pytest.approx(157.48)

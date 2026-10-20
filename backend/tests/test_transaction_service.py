@@ -1760,3 +1760,23 @@ async def test_bulk_remove_tags_clears_only_exact_matches(
     await session.refresh(t2)
     assert t1.notes == "#keep"
     assert t2.notes == "#test2 untouched"
+
+
+def test_apply_fx_override_amount_primary_takes_sign_of_amount():
+    """A typed converted amount follows the row's sign so aggregates agree with it."""
+    txn = Transaction(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        description="T",
+        amount=Decimal("-100"),
+        date=date.today(),
+        type="debit",
+        source="manual",
+    )
+    _apply_fx_override(txn, -100, amount_primary=500.0)
+    assert txn.amount_primary == Decimal("-500.0")
+    assert txn.fx_rate_used == Decimal("5")
+
+    _apply_fx_override(txn, -100, amount_primary=500.0, fx_rate_used=5.0)
+    assert txn.amount_primary == Decimal("-500.0")

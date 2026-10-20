@@ -52,6 +52,7 @@ import { DatePickerInput } from '@/components/ui/date-picker-input'
 import { PageHeader } from '@/components/page-header'
 import type { GroupMember, GroupSettlement, Transaction } from '@/types'
 import { formatCurrency } from '@/lib/format'
+import { isInflow } from '@/lib/transaction-direction'
 
 function SectionCard({ children }: { children: React.ReactNode }) {
   return (
@@ -878,10 +879,10 @@ export default function GroupDetailPage() {
                 </div>
                 <span
                   className={`text-sm font-semibold tabular-nums ml-3 ${
-                    tx.type === 'debit' ? 'text-rose-500' : 'text-emerald-600'
+                    isInflow(tx) ? 'text-emerald-600' : 'text-rose-500'
                   }`}
                 >
-                  {formatCurrency(Number(tx.amount), tx.currency, locale)}
+                  {formatCurrency(Math.abs(Number(tx.amount)), tx.currency, locale)}
                 </span>
               </li>
             ))}

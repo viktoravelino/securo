@@ -67,6 +67,7 @@ import { useWorkspace } from '@/contexts/workspace-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
 import { formatCurrency } from '@/lib/format'
 import { shouldShowPendingBadge } from '@/lib/transaction-status'
+import { isInflow, signedAmount } from '@/lib/transaction-direction'
 
 type TransactionUpdatePayload = TransactionEditPayload & {
   apply_to_transfer_pair?: boolean
@@ -810,8 +811,7 @@ export default function TransactionsPage() {
     let net = 0
     for (const tx of data?.items ?? []) {
       if (!selectedIds.has(tx.id)) continue
-      const base = Math.abs(Number(tx.amount_primary ?? tx.amount))
-      net += tx.type === 'credit' ? base : -base
+      net += signedAmount({ type: tx.type, amount: tx.amount_primary ?? tx.amount })
     }
     return net
   }, [data?.items, selectedIds])
@@ -1030,11 +1030,11 @@ export default function TransactionsPage() {
       <>
         <span
           className={`text-xs md:text-sm font-bold tabular-nums ${
-            tx.is_ignored ? 'text-gray-500': tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'
+            tx.is_ignored ? 'text-gray-500': isInflow(tx) ? 'text-emerald-600' : 'text-rose-500'
           }`}
         >
           {mask(
-            `${tx.is_ignored ? ' ' : tx.type === 'credit' ? '+' : '−'}${formatCurrency(
+            `${tx.is_ignored ? ' ' : isInflow(tx) ? '+' : '−'}${formatCurrency(
               Math.abs(displayAmount),
               tx.currency,
               locale,

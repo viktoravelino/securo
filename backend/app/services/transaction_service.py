@@ -75,13 +75,27 @@ async def _ensure_payee_in_workspace(
 def _apply_fx_override(transaction, amount, amount_primary=None, fx_rate_used=None):
     """Apply manual FX override values to a transaction.
 
-    - Both provided → use as-is
-    - Only amount_primary → derive rate = amount_primary / amount
+    - Both provided → store both; amount_primary is normalized to the sign
+      of `amount` (see below) and fx_rate_used is kept verbatim
+    - Only amount_primary → normalize its sign, then derive
+      rate = amount_primary / amount
     - Only fx_rate_used → derive amount_primary = amount * fx_rate_used
+      (which already carries the sign of `amount`)
+
+    Sign rule: a supplied amount_primary takes the sign of `amount` (only its
+    magnitude is used), so a negative debit/credit keeps a negative converted
+    amount. A zero `amount` leaves amount_primary as supplied.
     """
     from decimal import Decimal, ROUND_HALF_UP
 
     amount = Decimal(str(amount))
+    if amount_primary is not None:
+        # Aggregates read coalesce(amount_primary, amount), so the converted
+        # amount must carry the sign of `amount` or totals and row direction
+        # disagree (e.g. a typed positive BRL value on a negative USD debit).
+        amount_primary = Decimal(str(amount_primary))
+        if amount:
+            amount_primary = amount_primary.copy_abs().copy_sign(amount)
     if amount_primary is not None and fx_rate_used is not None:
         transaction.amount_primary = Decimal(str(amount_primary))
         transaction.fx_rate_used = Decimal(str(fx_rate_used))
@@ -439,6 +453,8 @@ async def get_transactions(
         # (issue #242) so the footer matches the dashboard & reports: paired
         # transfers, `treat_as_transfer` categories (transfers, investments,
         # custom) and ignored items are kept OUT of income/expense.
+        # Amounts are summed signed (not abs per row) so a negative debit
+        # (refund/repayment) reduces expense, matching account balances.
         pnl_filter = counts_as_pnl()
         pnl_subq = base_query.where(pnl_filter).subquery()
         amount_norm = func.coalesce(
@@ -447,7 +463,7 @@ async def get_transactions(
         summary_rows = await session.execute(
             select(
                 pnl_subq.c.type,
-                func.coalesce(func.sum(func.abs(amount_norm)), 0),
+                func.coalesce(func.sum(amount_norm), 0),
             ).group_by(pnl_subq.c.type)
         )
         income = Decimal("0")
@@ -471,9 +487,13 @@ async def get_transactions(
         )
         excluded = Decimal(str(excluded_total or 0))
 
+        # income/expense are clamped at 0 (a refund never shows as negative
+        # spending); net is the signed cash movement, so it can differ from
+        # income - expense when refunds exceed spending (a 100 credit and a
+        # -472.46 debit: income 100, expense 0, net 572.46).
         summary = {
-            "income": income,
-            "expense": expense,
+            "income": max(income, Decimal("0")),
+            "expense": max(expense, Decimal("0")),
             "net": income - expense,
             "excluded": excluded,
         }

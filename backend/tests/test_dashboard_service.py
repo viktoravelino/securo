@@ -1284,3 +1284,134 @@ async def test_balance_at_multi_currency(session, test_user, test_workspace):
 # ---------------------------------------------------------------------------
 # _total_balance_by_currency
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Negative debit amounts (API/manual entry) net against spending
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_negative_debit_nets_in_summary_and_category_spending(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """Debits 314.97, 314.97 and -472.46 in one category total 157.48."""
+    cat = await _make_category(session, test_user.id, "Cartao")
+    account = await _make_account(session, test_user.id, "NegDebit")
+    today = date.today()
+    for amount in (314.97, 314.97, -472.46):
+        await _add_txn(session, test_user.id, account.id, amount, "debit", today, category_id=cat.id)
+
+    summary = await get_summary(session, test_workspace.id, test_user.id)
+    assert summary.monthly_expenses == pytest.approx(157.48)
+    assert summary.monthly_expenses_primary == pytest.approx(157.48)
+
+    spending = await get_spending_by_category(session, test_workspace.id, test_user.id)
+    entry = next(s for s in spending if s.category_id == str(cat.id))
+    assert entry.total == pytest.approx(157.48)
+    assert entry.percentage == pytest.approx(100.0)
+
+
+@pytest.mark.asyncio
+async def test_category_with_net_negative_spending_is_clamped_out(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """A category whose debits net below zero contributes 0, not positive spending."""
+    refund_cat = await _make_category(session, test_user.id, "RefundOnly")
+    food = await _make_category(session, test_user.id, "FoodClamp")
+    account = await _make_account(session, test_user.id, "NegClamp")
+    today = date.today()
+    await _add_txn(session, test_user.id, account.id, -50, "debit", today, category_id=refund_cat.id)
+    await _add_txn(session, test_user.id, account.id, 80, "debit", today, category_id=food.id)
+
+    spending = await get_spending_by_category(session, test_workspace.id, test_user.id)
+    assert all(s.category_id != str(refund_cat.id) for s in spending)
+    food_entry = next(s for s in spending if s.category_id == str(food.id))
+    assert food_entry.total == pytest.approx(80.0)
+    assert food_entry.percentage == pytest.approx(100.0)
+
+    summary = await get_summary(session, test_workspace.id, test_user.id)
+    assert summary.monthly_expenses == pytest.approx(30.0)
+
+
+@pytest.mark.asyncio
+async def test_pending_negative_debit_nets_in_dashboard_projections(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """Pending debits 314.97, 314.97 and -472.46 project 157.48, not 1102.40."""
+    cat = await _make_category(session, test_user.id, "PendingCard")
+    account = await _make_account(session, test_user.id, "PendingNeg")
+    today = date.today()
+    for amount in (314.97, 314.97, -472.46):
+        await _add_txn(
+            session, test_user.id, account.id, amount, "debit", today,
+            category_id=cat.id, status="pending",
+        )
+
+    summary = await get_summary(session, test_workspace.id, test_user.id)
+    assert summary.projected_expenses == pytest.approx(157.48)
+    assert summary.projected_expenses_primary == pytest.approx(157.48)
+    assert summary.monthly_expenses == 0
+
+    spending = await get_spending_by_category(session, test_workspace.id, test_user.id)
+    entry = next(s for s in spending if s.category_id == str(cat.id))
+    assert entry.total == 0
+    assert entry.projected_total == pytest.approx(157.48)
+
+
+@pytest.mark.asyncio
+async def test_pending_refund_only_projects_zero_and_drops_category(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """A lone pending -50 debit never projects negative spending."""
+    cat = await _make_category(session, test_user.id, "PendingRefundOnly")
+    account = await _make_account(session, test_user.id, "PendingRefund")
+    await _add_txn(
+        session, test_user.id, account.id, -50, "debit", date.today(),
+        category_id=cat.id, status="pending",
+    )
+
+    summary = await get_summary(session, test_workspace.id, test_user.id)
+    assert summary.projected_expenses == 0
+    assert summary.projected_expenses_primary == 0
+
+    spending = await get_spending_by_category(session, test_workspace.id, test_user.id)
+    assert all(s.category_id != str(cat.id) for s in spending)
+
+
+@pytest.mark.asyncio
+async def test_category_netting_exactly_zero_is_dropped(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """+50 and -50 debits in one category leave no $0 row in the chart."""
+    cat = await _make_category(session, test_user.id, "NetZero")
+    account = await _make_account(session, test_user.id, "NetZeroAcct")
+    for amount in (50, -50):
+        await _add_txn(
+            session, test_user.id, account.id, amount, "debit", date.today(),
+            category_id=cat.id,
+        )
+
+    spending = await get_spending_by_category(session, test_workspace.id, test_user.id)
+    assert all(s.category_id != str(cat.id) for s in spending)
+
+
+@pytest.mark.asyncio
+async def test_category_with_pending_refund_larger_than_posted_is_dropped(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """Food posted 100 plus a pending -150 projects to 0: the widget renders
+    projected_total, so the row is omitted rather than shown as $0.00."""
+    cat = await _make_category(session, test_user.id, "FoodPendingRefund")
+    account = await _make_account(session, test_user.id, "FoodPendingRefundAcct")
+    await _add_txn(
+        session, test_user.id, account.id, 100, "debit", date.today(),
+        category_id=cat.id,
+    )
+    await _add_txn(
+        session, test_user.id, account.id, -150, "debit", date.today(),
+        category_id=cat.id, status="pending",
+    )
+
+    spending = await get_spending_by_category(session, test_workspace.id, test_user.id)
+    assert all(s.category_id != str(cat.id) for s in spending)

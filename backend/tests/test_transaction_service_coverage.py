@@ -1088,3 +1088,27 @@ async def test_get_transactions_unbilled_only_forward_override(session, test_use
         unbilled_only=True, from_date=date(2025, 5, 1), to_date=date(2025, 5, 31),
     )
     assert "ForwardOverride" in {t.description for t in res}
+
+
+async def test_get_transactions_summary_nets_negative_debit(session, test_user, test_workspace, acct):
+    for amount in ("314.97", "314.97", "-472.46"):
+        await _mk_txn(session, test_user, acct, amount=Decimal(amount), type="debit")
+    _, _, summary = await get_transactions(
+        session, test_workspace.id, test_user.id, include_summary=True
+    )
+    assert summary is not None
+    assert summary["expense"] == Decimal("157.48")
+    assert summary["net"] == Decimal("-157.48")
+
+
+async def test_get_transactions_summary_clamps_refund_only_expense(
+    session, test_user, test_workspace, acct
+):
+    """A refund-only filter shows 0 expense, while net stays signed."""
+    await _mk_txn(session, test_user, acct, amount=Decimal("-50"), type="debit")
+    _, _, summary = await get_transactions(
+        session, test_workspace.id, test_user.id, include_summary=True
+    )
+    assert summary is not None
+    assert summary["expense"] == Decimal("0")
+    assert summary["net"] == Decimal("50")

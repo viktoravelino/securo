@@ -58,6 +58,7 @@ import { resolveDateFnsLocale } from '@/lib/date-fns-locale'
 import type { Rule, Transaction } from '@/types'
 import { formatCurrency } from '@/lib/format'
 import { shouldShowPendingBadge } from '@/lib/transaction-status'
+import { isInflow } from '@/lib/transaction-direction'
 
 function formatDate(dateStr: string, locale = 'pt-BR') {
   return new Date(dateStr + 'T00:00:00').toLocaleDateString(locale)
@@ -495,7 +496,10 @@ export default function DashboardPage() {
     description: string
     date: string
     type: 'debit' | 'credit'
+    // Magnitude shown; for shared rows this is the viewer's share.
     amount: number
+    // Direction of the parent transaction (a share is stored as a magnitude).
+    inflow: boolean
     amountPrimary: number | null
     currency: string
     categoryIcon: string | null
@@ -549,6 +553,7 @@ export default function DashboardPage() {
         date: tx.date,
         type: tx.type,
         amount: displayAmount,
+        inflow: isInflow(tx),
         amountPrimary: tx.amount_primary != null ? Number(tx.amount_primary) : null,
         currency: tx.currency,
         categoryIcon: tx.category?.icon ?? null,
@@ -576,6 +581,7 @@ export default function DashboardPage() {
         date: pt.date,
         type: pt.type,
         amount: pt.amount,
+        inflow: isInflow(pt),
         amountPrimary: pt.amount_primary ?? null,
         currency: pt.currency,
         categoryIcon: pt.category_icon,
@@ -1349,8 +1355,8 @@ export default function DashboardPage() {
 
                       {/* Amount */}
                       <div className="shrink-0 text-right">
-                        <span className={`text-sm font-bold tabular-nums ${row.isIgnored ? 'text-gray-500' : row.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
-                          {mask(`${row.isIgnored ? ' ' : row.type === 'credit' ? '+' : '\u2212'}${formatCurrency(Math.abs(row.amount), row.currency, locale)}`)}
+                        <span className={`text-sm font-bold tabular-nums ${row.isIgnored ? 'text-gray-500' : row.inflow ? 'text-emerald-600' : 'text-rose-500'}`}>
+                          {mask(`${row.isIgnored ? ' ' : row.inflow ? '+' : '\u2212'}${formatCurrency(Math.abs(row.amount), row.currency, locale)}`)}
                         </span>
                         {row.isShared && row.parentTotal != null && (
                           <div className="text-[10px] text-muted-foreground tabular-nums mt-0.5">
@@ -1470,8 +1476,8 @@ export default function DashboardPage() {
                         })()}
                       </TableCell>
                       <TableCell className="py-2.5 pr-5 text-right">
-                        <span className={`text-sm font-semibold tabular-nums ${row.isIgnored ? 'text-gray-500' : row.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
-                          {mask(`${row.isIgnored ? ' ' : row.type === 'credit' ? '+' : '-'}${formatCurrency(Math.abs(row.amount), row.currency, locale)}`)}
+                        <span className={`text-sm font-semibold tabular-nums ${row.isIgnored ? 'text-gray-500' : row.inflow ? 'text-emerald-600' : 'text-rose-500'}`}>
+                          {mask(`${row.isIgnored ? ' ' : row.inflow ? '+' : '-'}${formatCurrency(Math.abs(row.amount), row.currency, locale)}`)}
                         </span>
                         {row.isShared && row.parentTotal != null && (
                           <span className="block text-[10px] text-muted-foreground tabular-nums">

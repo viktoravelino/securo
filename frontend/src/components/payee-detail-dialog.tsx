@@ -19,6 +19,7 @@ import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { formatCurrency } from '@/lib/format'
 import type { Payee } from '@/types'
+import { isInflow } from '@/lib/transaction-direction'
 
 type PayeeDetailDialogProps = {
   /** The payee to describe, or null when the dialog is closed. */
@@ -141,8 +142,8 @@ export function PayeeDetailDialog({
                             {tx.category?.name && <> · {tx.category.name}</>}
                           </p>
                         </div>
-                        <span className={`text-sm font-semibold tabular-nums ml-3 ${tx.type === 'debit' ? 'text-rose-500' : 'text-emerald-600'}`}>
-                          {mask(formatCurrency(tx.amount, tx.currency, locale))}
+                        <span className={`text-sm font-semibold tabular-nums ml-3 ${isInflow(tx) ? 'text-emerald-600' : 'text-rose-500'}`}>
+                          {mask(formatCurrency(Math.abs(tx.amount), tx.currency, locale))}
                         </span>
                       </div>
                     ))}

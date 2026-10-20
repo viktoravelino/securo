@@ -34,6 +34,7 @@ import {
   Compass,
 } from 'lucide-react'
 
+import { isInflow } from '@/lib/transaction-direction'
 import { search as searchApi, type SearchHit, type SearchHitType } from '@/lib/api'
 import { cn, normalizeText } from '@/lib/utils'
 import { transactionDescription } from '@/lib/transaction-description'
@@ -233,6 +234,14 @@ function formatHitAmount(amount: number | null, currency: string | null, locale:
   } catch {
     return `${amount}`
   }
+}
+
+/** Direction of a transaction hit (from type x sign, like list rows); null for other hits. */
+function hitDirection(hit: SearchHit): 'inflow' | 'outflow' | null {
+  if (hit.type !== 'transaction' || hit.amount === null) return null
+  const txType = hit.meta?.tx_type
+  if (txType !== 'debit' && txType !== 'credit') return null
+  return isInflow({ type: txType, amount: hit.amount }) ? 'inflow' : 'outflow'
 }
 
 function formatHitDate(iso: string | null, locale: string): string | null {
@@ -556,10 +565,13 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                           const source = hit.type === 'transaction' && hit.meta?.source === 'opening_balance'
                             ? 'opening_balance' : undefined
                           const label = transactionDescription(hit.label, source, t)
-                          const amount = formatHitAmount(hit.amount, hit.currency, locale)
+                          const direction = hitDirection(hit)
+                          const amount = formatHitAmount(
+                            direction && hit.amount !== null ? Math.abs(hit.amount) : hit.amount,
+                            hit.currency,
+                            locale,
+                          )
                           const dateLabel = formatHitDate(hit.date, locale)
-                          const isPositive = (hit.amount ?? 0) > 0 && hit.type === 'transaction' && (hit.meta?.tx_type === 'credit' || hit.amount! > 0)
-                          const isNegative = hit.type === 'transaction' && hit.amount !== null && (hit.meta?.tx_type === 'debit' || hit.amount! < 0)
                           return (
                             <Command.Item
                               key={`${hit.type}-${hit.id}`}
@@ -593,9 +605,9 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                                 <div
                                   className={cn(
                                     'shrink-0 tabular-nums text-[12.5px] font-medium',
-                                    isNegative && 'text-rose-500 dark:text-rose-400',
-                                    isPositive && 'text-emerald-500 dark:text-emerald-400',
-                                    !isNegative && !isPositive && 'text-muted-foreground'
+                                    direction === 'outflow' && 'text-rose-500 dark:text-rose-400',
+                                    direction === 'inflow' && 'text-emerald-500 dark:text-emerald-400',
+                                    !direction && 'text-muted-foreground'
                                   )}
                                 >
                                   {amount}

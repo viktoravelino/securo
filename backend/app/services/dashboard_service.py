@@ -20,6 +20,7 @@ from app.services._query_filters import (
     owner_split_offset_by_category,
     owner_split_offset_pnl,
     reporting_date_col,
+    signed_share_amount,
     viewer_shared_pnl,
     viewer_shared_spending_by_category,
 )
@@ -479,7 +480,7 @@ async def get_summary(
     # Use real-only totals (without projections) to avoid double-counting;
     # projections are added separately below via convert().
     monthly_income_primary = real_monthly_income
-    monthly_expenses_primary = abs(real_monthly_expenses)
+    monthly_expenses_primary = real_monthly_expenses
 
     # Use amount_primary sums for more accurate multi-currency income/expenses.
     # Same posted-only rule as the native-currency totals above.
@@ -503,7 +504,7 @@ async def get_summary(
     primary_row = primary_result.one()
     if primary_row[0] is not None or primary_row[1] is not None:
         monthly_income_primary = float(primary_row[0] or 0)
-        monthly_expenses_primary = abs(float(primary_row[1] or 0))
+        monthly_expenses_primary = float(primary_row[1] or 0)
 
     if not filtered:
         # Apply share-only offset in primary currency (FX-converted).
@@ -538,13 +539,13 @@ async def get_summary(
                 Transaction.currency,
                 func.sum(
                     case(
-                        (Transaction.type == "credit", TransactionSplit.share_amount),
+                        (Transaction.type == "credit", signed_share_amount()),
                         else_=0,
                     )
                 ),
                 func.sum(
                     case(
-                        (Transaction.type == "debit", TransactionSplit.share_amount),
+                        (Transaction.type == "debit", signed_share_amount()),
                         else_=0,
                     )
                 ),
@@ -576,7 +577,7 @@ async def get_summary(
                 debit_pri, _ = await convert(
                     session, Decimal(str(in_debit)), cur, primary_currency
                 )
-                monthly_expenses_primary += abs(float(debit_pri))
+                monthly_expenses_primary += float(debit_pri)
 
     projected_income_primary = monthly_income_primary
     projected_expenses_primary = monthly_expenses_primary
@@ -601,9 +602,9 @@ async def get_summary(
                 session, Decimal(str(tx.amount)), tx.currency, primary_currency,
             )
         if tx.type == "credit":
-            projected_income_primary += abs(float(forecast_converted))
+            projected_income_primary += float(forecast_converted)
         else:
-            projected_expenses_primary += abs(float(forecast_converted))
+            projected_expenses_primary += float(forecast_converted)
 
     # Aggregate the user's net pending balance across all groups they
     # participate in. We reuse the group balance computation so partial
@@ -622,14 +623,14 @@ async def get_summary(
         projected_balance=projected_balance,
         projected_balance_primary=round(projected_balance_primary, 2),
         balance_date=cutoff.isoformat(),
-        monthly_income=real_monthly_income,
-        monthly_expenses=abs(real_monthly_expenses),
-        monthly_income_primary=round(monthly_income_primary, 2),
-        monthly_expenses_primary=round(monthly_expenses_primary, 2),
-        projected_income=projected_monthly_income,
-        projected_expenses=abs(projected_monthly_expenses),
-        projected_income_primary=round(projected_income_primary, 2),
-        projected_expenses_primary=round(projected_expenses_primary, 2),
+        monthly_income=max(real_monthly_income, 0.0),
+        monthly_expenses=max(real_monthly_expenses, 0.0),
+        monthly_income_primary=round(max(monthly_income_primary, 0.0), 2),
+        monthly_expenses_primary=round(max(monthly_expenses_primary, 0.0), 2),
+        projected_income=max(projected_monthly_income, 0.0),
+        projected_expenses=max(projected_monthly_expenses, 0.0),
+        projected_income_primary=round(max(projected_income_primary, 0.0), 2),
+        projected_expenses_primary=round(max(projected_expenses_primary, 0.0), 2),
         accounts_count=accounts_count,
         pending_categorization=pending_categorization,
         pending_categorization_amount=pending_categorization_amount,
@@ -762,7 +763,7 @@ async def get_spending_by_category(
             "name": row[1] or "Sem categoria",
             "icon": row[2] or "circle-help",
             "color": row[3] or "#6B7280",
-            "total": abs(float(row[4] or 0)),
+            "total": float(row[4] or 0),
             "projected": 0.0,
         }
 
@@ -885,11 +886,11 @@ async def get_spending_by_category(
                 "color": category.color if category else "#6B7280",
             }
         if tx.amount_primary is not None:
-            projected_amount = float(abs(tx.amount_primary))
+            projected_amount = float(tx.amount_primary)
         else:
             amount, _ = await convert(
                 session,
-                Decimal(str(abs(tx.amount))),
+                Decimal(str(tx.amount)),
                 tx.currency,
                 primary_currency,
             )
@@ -903,20 +904,32 @@ async def get_spending_by_category(
             )
             spending_map[cat_id] = {**info, "total": 0.0, "projected": projected_amount}
 
-    # `total` stays posted-only so the breakdown adds up to the expenses card,
-    # which is also posted-only. The forecast rides along in `projected_total`
-    # (actual + forecast) for callers that want the same split the card shows.
-    grand_total = sum(entry["total"] for entry in spending_map.values())
+    # `total` is posted-only and the forecast rides along in `projected_total`
+    # (actual + forecast). Totals are signed (a negative debit is a refund that
+    # offsets spending) and each category is clamped at 0 individually, so the
+    # breakdown sums the clamped positive categories and can exceed the
+    # expenses card when refunds net another category below zero (Food 80 +
+    # RefundOnly -50: the card shows 30, the breakdown sums to 80). A category
+    # netting <= 0 once the forecast is included (`projected_total`, which the
+    # widget renders) is omitted, so a pending refund larger than the posted
+    # spend doesn't leave a $0 row.
+    visible = []
+    for cat_id, entry in spending_map.items():
+        projected_total = max(entry["total"] + entry.get("projected", 0.0), 0.0)
+        if projected_total <= 0:
+            continue
+        visible.append((cat_id, entry, max(entry["total"], 0.0), projected_total))
+    grand_total = sum(total for _, _, total, _ in visible)
     spending = []
-    for cat_id, entry in sorted(spending_map.items(), key=lambda x: x[1]["total"], reverse=True):
+    for cat_id, entry, total, projected_total in sorted(visible, key=lambda x: x[2], reverse=True):
         spending.append(SpendingByCategory(
             category_id=cat_id,
             category_name=entry["name"],
             category_icon=entry["icon"],
             category_color=entry["color"],
-            total=entry["total"],
-            projected_total=entry["total"] + entry.get("projected", 0.0),
-            percentage=(entry["total"] / grand_total * 100) if grand_total else 0,
+            total=total,
+            projected_total=projected_total,
+            percentage=(total / grand_total * 100) if grand_total else 0,
         ))
 
     return spending
@@ -960,7 +973,7 @@ async def get_monthly_trend(
 
     trend_map: dict[str, list[float]] = {}
     for row in result.all():
-        trend_map[row[0]] = [float(row[1] or 0), abs(float(row[2] or 0))]
+        trend_map[row[0]] = [float(row[1] or 0), float(row[2] or 0)]
 
     # Keep the dashboard trend's current month useful even when its only
     # activity is still pending or future-dated. Those rows are forecast data,
@@ -987,12 +1000,12 @@ async def get_monthly_trend(
         month_key = f"{tx_report_date.year:04d}-{tx_report_date.month:02d}"
         bucket = trend_map.setdefault(month_key, [0.0, 0.0])
         if tx.amount_primary is not None:
-            amount = abs(float(tx.amount_primary))
+            amount = float(tx.amount_primary)
         else:
             converted, _ = await convert(
-                session, Decimal(str(abs(tx.amount))), tx.currency, primary_currency,
+                session, Decimal(str(tx.amount)), tx.currency, primary_currency,
             )
-            amount = abs(float(converted))
+            amount = float(converted)
         if tx.type == "credit":
             bucket[0] += amount
         else:

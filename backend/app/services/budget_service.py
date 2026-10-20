@@ -352,10 +352,10 @@ async def get_budget_vs_actual(
         cat_id = str(tx.category_id)
         amount = tx.amount_primary
         if amount is not None:
-            converted = abs(Decimal(str(amount)))
+            converted = Decimal(str(amount))
         else:
             converted, _ = await convert(
-                session, Decimal(str(abs(tx.amount))), tx.currency, primary_currency,
+                session, Decimal(str(tx.amount)), tx.currency, primary_currency,
             )
         projected_spending_map[cat_id] = projected_spending_map.get(cat_id, Decimal("0")) + converted
 
@@ -441,10 +441,10 @@ async def get_budget_vs_actual(
         cat_id = str(tx.category_id)
         amount = tx.amount_primary
         if amount is not None:
-            converted = abs(Decimal(str(amount)))
+            converted = Decimal(str(amount))
         else:
             converted, _ = await convert(
-                session, Decimal(str(abs(tx.amount))), tx.currency, primary_currency,
+                session, Decimal(str(tx.amount)), tx.currency, primary_currency,
             )
         projected_prev_spending_map[cat_id] = projected_prev_spending_map.get(cat_id, Decimal("0")) + converted
 
@@ -452,9 +452,11 @@ async def get_budget_vs_actual(
     for category, group in all_categories:
         cat_id = str(category.id)
         actual = spending_map.get(cat_id, Decimal("0"))
-        projected = projected_spending_map.get(cat_id, Decimal("0"))
+        # Pending/forecast rows are signed (a negative debit is a refund), so
+        # the per-category sum can dip below zero; spending is never negative.
+        projected = max(projected_spending_map.get(cat_id, Decimal("0")), Decimal("0"))
         prev_actual = prev_spending_map.get(cat_id, Decimal("0"))
-        projected_prev = projected_prev_spending_map.get(cat_id, Decimal("0"))
+        projected_prev = max(projected_prev_spending_map.get(cat_id, Decimal("0")), Decimal("0"))
         budget_entry = budget_map.get(cat_id)
         budget_amount = budget_entry[0] if budget_entry else None
         is_recurring = budget_entry[1] if budget_entry else False

@@ -967,3 +967,80 @@ async def test_transaction_calendar_shows_closed_account_history_but_not_its_bal
     assert july_3.items[0].description == "Old fee"
     # The balance is what the open accounts hold; the closed account is not part of it.
     assert july_3.ending_balance == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_transaction_calendar_negative_debit_is_money_in(
+    session: AsyncSession, test_user, test_workspace
+):
+    """Direction is type x sign: a -472.46 debit is money in. Each row lands in
+    income or expense by its effective direction, as a magnitude."""
+    account = Account(
+        id=uuid.uuid4(), user_id=test_user.id, workspace_id=test_workspace.id,
+        name="Signed calendar", type="checking", balance=Decimal("0"), currency="BRL",
+    )
+    session.add(account)
+    await session.flush()
+    for description, amount, day, status in (
+        ("Only refund", "-472.46", 1, "posted"),
+        ("Dinner", "314.97", 8, "posted"),
+        ("Lunch", "314.97", 8, "posted"),
+        ("Refund", "-472.46", 8, "posted"),
+        ("Pending refund", "-472.46", 9, "pending"),
+    ):
+        session.add(Transaction(
+            id=uuid.uuid4(), user_id=test_user.id, workspace_id=test_workspace.id,
+            account_id=account.id, description=description, amount=Decimal(amount),
+            currency="BRL", date=date(2026, 7, day),
+            type="debit", source="sync", status=status,
+        ))
+    await session.commit()
+
+    calendar = await get_transaction_calendar(
+        session, test_workspace.id, test_user.id, month=date(2026, 7, 1)
+    )
+    by_date = {day.date: day for day in calendar.days}
+
+    july_1 = by_date[date(2026, 7, 1)]
+    assert (july_1.income, july_1.expense) == (472.46, 0.0)
+    assert (july_1.actual_income, july_1.actual_expense) == (472.46, 0.0)
+    assert july_1.has_income and not july_1.has_expense
+    assert july_1.ending_balance == 472.46
+
+    july_8 = by_date[date(2026, 7, 8)]
+    assert (july_8.income, july_8.expense) == (472.46, 629.94)
+    assert (july_8.actual_income, july_8.actual_expense) == (472.46, 629.94)
+    assert july_8.ending_balance == pytest.approx(472.46 - 157.48)
+
+    july_9 = by_date[date(2026, 7, 9)]
+    assert (july_9.projected_income, july_9.projected_expense) == (472.46, 0.0)
+    assert july_9.has_income and not july_9.has_expense
+    assert july_9.ending_balance == pytest.approx(472.46 - 157.48 + 472.46)
+
+
+@pytest.mark.asyncio
+async def test_transaction_calendar_negative_recurring_debit_is_projected_income(
+    session: AsyncSession, test_user, test_workspace
+):
+    account = Account(
+        id=uuid.uuid4(), user_id=test_user.id, workspace_id=test_workspace.id,
+        name="Signed recurring", type="checking", balance=Decimal("0"), currency="BRL",
+    )
+    session.add(account)
+    await session.flush()
+    session.add(RecurringTransaction(
+        id=uuid.uuid4(), user_id=test_user.id, workspace_id=test_workspace.id,
+        account_id=account.id, description="Cashback", amount=Decimal("-472.46"),
+        currency="BRL", type="debit", frequency="monthly",
+        start_date=date(2026, 7, 10), next_occurrence=date(2026, 7, 10),
+    ))
+    await session.commit()
+
+    calendar = await get_transaction_calendar(
+        session, test_workspace.id, test_user.id, month=date(2026, 7, 1)
+    )
+    by_date = {day.date: day for day in calendar.days}
+    before, on = by_date[date(2026, 7, 9)], by_date[date(2026, 7, 10)]
+    assert (on.projected_income, on.projected_expense) == (472.46, 0.0)
+    assert on.has_income and not on.has_expense
+    assert on.ending_balance == pytest.approx(before.ending_balance + 472.46)

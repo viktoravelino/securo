@@ -404,3 +404,77 @@ async def test_no_duplicate_member_per_transaction(
     )
     with pytest.raises(ValueError, match="at most once"):
         await split_service.replace_splits(session, tx, payload, test_user.id)
+
+
+@pytest.mark.asyncio
+async def test_negative_debit_split_offsets_spending_in_opposite_direction(
+    session: AsyncSession,
+):
+    """A -472.46 debit (a repayment) split 50/50 reduces spending by 236.23 for
+    both the owner (offset) and the viewer (shared share), not increases it."""
+    from datetime import date
+
+    from app.services._query_filters import (
+        owner_split_offset_by_category,
+        owner_split_offset_pnl,
+        viewer_shared_pnl,
+        viewer_shared_spending_by_category,
+    )
+
+    suffix = uuid.uuid4().hex[:8]
+    owner, owner_ws = await _user_with_workspace(session, f"owner-{suffix}@example.com")
+    friend, _ = await _user_with_workspace(session, f"friend-{suffix}@example.com")
+    group = await group_service.create_group(
+        session, owner_ws.id, owner.id, GroupCreate(name="Trip")
+    )
+    owner_member = await group_service.create_member(
+        session, group.id, owner_ws.id, GroupMemberCreate(name="Owner", is_self=True)
+    )
+    friend_member = await group_service.create_member(
+        session, group.id, owner_ws.id,
+        GroupMemberCreate(name="Friend", email=f"friend-{suffix}@example.com"),
+    )
+    assert owner_member is not None and friend_member is not None
+
+    tx = await _make_workspace_tx(session, owner, owner_ws)
+    tx.amount = Decimal("-472.46")
+    await split_service.replace_splits(
+        session,
+        tx,
+        TransactionSplitsInput(
+            share_type="equal",
+            splits=[
+                TransactionSplitInput(group_member_id=owner_member.id),
+                TransactionSplitInput(group_member_id=friend_member.id),
+            ],
+        ),
+        owner.id,
+    )
+    await session.commit()
+
+    month_start = date.today().replace(day=1)
+    month_end = (
+        month_start.replace(year=month_start.year + 1, month=1)
+        if month_start.month == 12
+        else month_start.replace(month=month_start.month + 1)
+    )
+
+    # Owner: the friend's share is subtracted from the (negative) full debit.
+    _, owner_expense_offset = await owner_split_offset_pnl(
+        session, owner.id, month_start, month_end
+    )
+    assert owner_expense_offset == pytest.approx(-236.23)
+    by_category = await owner_split_offset_by_category(
+        session, owner.id, month_start, month_end
+    )
+    assert sum(by_category.values()) == pytest.approx(-236.23)
+
+    # Viewer: their share of the repayment lowers their spending.
+    _, viewer_expense = await viewer_shared_pnl(
+        session, friend.id, month_start, month_end
+    )
+    assert viewer_expense == pytest.approx(-236.23)
+    viewer_by_category = await viewer_shared_spending_by_category(
+        session, friend.id, month_start, month_end
+    )
+    assert sum(viewer_by_category.values()) == pytest.approx(-236.23)

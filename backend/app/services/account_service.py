@@ -900,8 +900,8 @@ async def get_account_summary(
     # asymmetric with the debit side).
     if account.type == "credit_card":
         signed_for_bill = case(
-            (Transaction.type == "credit", -func.abs(effective_amount)),
-            else_=func.abs(effective_amount),
+            (Transaction.type == "credit", -effective_amount),
+            else_=effective_amount,
         )
         expenses_result = await session.execute(
             _scope(select(func.coalesce(func.sum(signed_for_bill), 0)).where(
@@ -914,7 +914,7 @@ async def get_account_summary(
         )
     else:
         expenses_result = await session.execute(
-            _scope(select(func.coalesce(func.sum(func.abs(effective_amount)), 0)).where(
+            _scope(select(func.coalesce(func.sum(effective_amount), 0)).where(
                 Transaction.account_id == account_id,
                 Transaction.type == "debit",
                 bucket_date <= today,
@@ -955,7 +955,7 @@ async def get_account_summary(
         )
     else:
         forecast_expense_result = await session.execute(
-            _scope(select(func.coalesce(func.sum(func.abs(effective_amount)), 0)).where(
+            _scope(select(func.coalesce(func.sum(effective_amount), 0)).where(
                 Transaction.account_id == account_id,
                 Transaction.type == "debit",
                 forecast_condition,
@@ -970,14 +970,24 @@ async def get_account_summary(
         else 0.0
     )
 
+    # Sums are signed (a negative debit/credit is a refund/repayment), so the
+    # income and expense totals returned are clamped at 0. A card's bill is
+    # debits minus credits - a balance-like figure - and keeps its sign.
+    projected_income = max(monthly_income + forecast_income, 0.0)
+    projected_expenses = monthly_expenses + forecast_expenses
+    monthly_income = max(monthly_income, 0.0)
+    if account.type != "credit_card":
+        monthly_expenses = max(monthly_expenses, 0.0)
+        projected_expenses = max(projected_expenses, 0.0)
+
     return {
         "account_id": account_id,
         "current_balance": current_balance,
         "opening_balance": opening_balance,
         "monthly_income": monthly_income,
         "monthly_expenses": monthly_expenses,
-        "projected_income": monthly_income + forecast_income,
-        "projected_expenses": monthly_expenses + forecast_expenses,
+        "projected_income": projected_income,
+        "projected_expenses": projected_expenses,
     }
 
 
