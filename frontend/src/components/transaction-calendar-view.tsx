@@ -14,6 +14,7 @@ import { useEffectiveTimezone } from '@/hooks/use-timezone'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/format'
 import { shouldShowPendingBadge } from '@/lib/transaction-status'
+import { isInflow, signedAmount } from '@/lib/transaction-direction'
 
 function parseLocalDate(value: string) {
   return new Date(`${value}T00:00:00`)
@@ -26,10 +27,6 @@ function compactCurrency(value: number, currency = 'USD', locale = 'en-US') {
     notation: 'compact',
     maximumFractionDigits: 1,
   }).format(value)
-}
-
-function signedAmount(item: TransactionCalendarItem) {
-  return item.type === 'credit' ? Math.abs(item.amount) : -Math.abs(item.amount)
 }
 
 function displayDayNumber(date: string) {
@@ -1216,7 +1213,7 @@ function CalendarItemRow({
   const interactive = isCalendarItemInteractive(item)
   const amountColor = item.is_ignored
     ? 'text-gray-500'
-    : item.type === 'credit'
+    : isInflow(item)
       ? 'text-emerald-600'
       : 'text-rose-500'
   return (
@@ -1272,7 +1269,7 @@ function CalendarItemRow({
       </div>
       <div className="shrink-0 text-right">
         <span className={cn('text-sm font-bold tabular-nums', amountColor)}>
-          {mask(`${item.is_ignored ? ' ' : item.type === 'credit' ? '+' : '−'}${formatCurrency(Math.abs(item.amount), item.currency, locale)}`)}
+          {mask(`${item.is_ignored ? ' ' : isInflow(item) ? '+' : '−'}${formatCurrency(Math.abs(item.amount), item.currency, locale)}`)}
         </span>
         {item.amount_primary != null && item.currency !== userCurrency && (
           <div className="text-[10px] text-muted-foreground tabular-nums mt-0.5">

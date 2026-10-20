@@ -131,13 +131,14 @@ async def get_transaction_calendar(
                 day.actual_transfer_net += transfer_delta
                 day.has_transfer = True
             elif tx.source != "opening_balance":
-                if tx.type == "credit":
-                    day.income += amount_primary
-                    day.actual_income += amount_primary
+                signed = await _signed_activity_primary(session, tx, primary_currency)
+                if _is_inflow(tx.type, signed):
+                    day.income += abs(signed)
+                    day.actual_income += abs(signed)
                     day.has_income = True
                 else:
-                    day.expense += amount_primary
-                    day.actual_expense += amount_primary
+                    day.expense += abs(signed)
+                    day.actual_expense += abs(signed)
                     day.has_expense = True
 
         day.actual_count += 1
@@ -164,14 +165,16 @@ async def get_transaction_calendar(
                 day.transfer_net += delta
                 day.projected_transfer_net += delta
                 day.has_transfer = True
-            elif tx.type == "credit":
-                day.income += amount_primary
-                day.projected_income += amount_primary
-                day.has_income = True
             else:
-                day.expense += amount_primary
-                day.projected_expense += amount_primary
-                day.has_expense = True
+                signed = await _signed_activity_primary(session, tx, primary_currency)
+                if _is_inflow(tx.type, signed):
+                    day.income += abs(signed)
+                    day.projected_income += abs(signed)
+                    day.has_income = True
+                else:
+                    day.expense += abs(signed)
+                    day.projected_expense += abs(signed)
+                    day.has_expense = True
         day.projected_count += 1
         day.items.append(_forecast_item(tx, amount_primary, is_transfer, ignored))
 
@@ -194,6 +197,8 @@ async def get_transaction_calendar(
     start_balance += carried_projected_delta
     for item, signed_delta in projected_items:
         day = days[item.date]
+        # signed_delta is the balance movement, so its sign is the effective
+        # direction (a negative-amount debit is an inflow).
         amount_primary = abs(signed_delta)
         # Ignored projections stay out of every aggregate, exactly like ignored
         # actuals: out of the activity buckets here, and out of the balance deltas
@@ -204,7 +209,7 @@ async def get_transaction_calendar(
                 day.transfer_net += signed_delta
                 day.projected_transfer_net += signed_delta
                 day.has_transfer = True
-            elif item.type == "credit":
+            elif signed_delta >= 0:
                 day.income += amount_primary
                 day.projected_income += amount_primary
                 day.has_income = True
@@ -326,6 +331,27 @@ async def _positive_primary_amount(
     return float(converted)
 
 
+def _is_inflow(tx_type: str, signed_amount: float) -> bool:
+    """Effective direction is type x sign: a credit with amount >= 0 or a debit
+    with amount < 0 is money in."""
+    return (tx_type == "credit") == (signed_amount >= 0)
+
+
+async def _signed_activity_primary(
+    session: AsyncSession,
+    tx: Transaction,
+    primary_currency: str,
+) -> float:
+    """Raw signed amount in the primary currency (no abs); see _is_inflow."""
+    if tx.currency == primary_currency:
+        return float(tx.amount)
+    if tx.amount_primary is not None:
+        # amount_primary is stamped with the same sign as amount
+        return float(Decimal(str(tx.amount_primary)))
+    converted, _ = await fx_convert(session, tx.amount, tx.currency, primary_currency)
+    return float(converted)
+
+
 async def _signed_balance_delta_primary(
     session: AsyncSession,
     tx: Transaction,
@@ -337,7 +363,7 @@ async def _signed_balance_delta_primary(
         if tx.currency == account_currency
         else Decimal(str(tx.amount_primary or tx.amount))
     )
-    amount = abs(Decimal(str(effective)))
+    amount = Decimal(str(effective))
     if account_currency != primary_currency:
         amount, _ = await fx_convert(session, amount, account_currency, primary_currency)
     signed = amount if tx.type == "credit" else -amount
@@ -484,7 +510,9 @@ async def _project_recurring_items(
         amount_primary = await _positive_primary_amount(
             session, rec.amount, rec.currency, primary_currency, rec.amount_primary
         )
-        signed_delta = amount_primary if rec.type == "credit" else -amount_primary
+        # Keep the template's sign: a negative-amount debit is money in.
+        signed_amount = -amount_primary if rec.amount < 0 else amount_primary
+        signed_delta = signed_amount if rec.type == "credit" else -signed_amount
         is_transfer = bool(category and category.treat_as_transfer)
         is_ignored = bool(category and category.is_ignored)
         if not is_ignored:

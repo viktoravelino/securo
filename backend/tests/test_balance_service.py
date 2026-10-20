@@ -374,3 +374,44 @@ async def test_no_self_member_means_only_split_totals(
     by_member = {ln["member_id"]: ln["amount"] for ln in balances["lines"]}
     assert by_member[a.id] == Decimal("10.00")
     assert by_member[b.id] == Decimal("10.00")
+
+
+@pytest.mark.asyncio
+async def test_negative_parent_split_offsets_what_friend_owes(
+    session: AsyncSession, test_user, test_workspace
+):
+    """A -100 debit (a refund) split 50/50 gives back the friend's share of the
+    +100 debit, so the pair nets to zero instead of doubling the debt."""
+    group, self_m, friends = await _setup(
+        session, test_user, test_workspace.id, n_others=1
+    )
+    friend = friends[0]
+    account = await _make_account(session, test_user.id)
+    payload = TransactionSplitsInput(
+        share_type="equal",
+        splits=[
+            TransactionSplitInput(group_member_id=self_m.id),
+            TransactionSplitInput(group_member_id=friend.id),
+        ],
+    )
+    spend = await _make_tx(session, test_user.id, account.id, "100.00")
+    await split_service.replace_splits(session, spend, payload, test_user.id)
+    await session.commit()
+
+    balances = await balance_service.compute_balances(
+        session, group.id, test_workspace.id, test_user.id
+    )
+    assert balances is not None
+    assert {ln["member_id"]: ln["amount"] for ln in balances["lines"]} == {
+        friend.id: Decimal("50.00")
+    }
+
+    refund = await _make_tx(session, test_user.id, account.id, "-100.00")
+    await split_service.replace_splits(session, refund, payload, test_user.id)
+    await session.commit()
+
+    balances = await balance_service.compute_balances(
+        session, group.id, test_workspace.id, test_user.id
+    )
+    assert balances is not None
+    assert balances["lines"] == []

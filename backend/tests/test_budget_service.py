@@ -551,3 +551,67 @@ async def test_budget_vs_actual_offsets_refunds(
     assert cat0[0].actual_amount == Decimal("120")
     assert cat0[0].prev_month_amount == Decimal("55")
 
+
+
+@pytest.mark.asyncio
+async def test_budget_vs_actual_projection_nets_negative_debit(
+    session: AsyncSession, test_user, test_workspace, test_categories
+):
+    """Pending debits project signed: a -472.46 repayment offsets two charges."""
+    account = Account(
+        id=uuid.uuid4(), user_id=test_user.id, name="NegDebitBudget",
+        type="checking", balance=Decimal("0"), currency="BRL",
+    )
+    session.add(account)
+    await session.commit()
+
+    for amount in ("314.97", "314.97", "-472.46"):
+        session.add(Transaction(
+            id=uuid.uuid4(), user_id=test_user.id, account_id=account.id,
+            category_id=test_categories[0].id, description="Pending",
+            amount=Decimal(amount), date=date(2025, 3, 10), type="debit",
+            source="manual", status="pending",
+            created_at=datetime.now(timezone.utc),
+        ))
+    await session.commit()
+
+    comparisons = await get_budget_vs_actual(
+        session, test_workspace.id, test_user.id, month=date(2025, 3, 1)
+    )
+    comp = next(c for c in comparisons if c.category_id == test_categories[0].id)
+    assert comp.projected_amount == Decimal("157.48")
+    assert comp.actual_amount == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_budget_vs_actual_projection_clamps_refund_only_at_zero(
+    session: AsyncSession, test_user, test_workspace, test_categories
+):
+    """A pending -472.46 debit alone projects 0, not a negative amount or percentage."""
+    account = Account(
+        id=uuid.uuid4(), user_id=test_user.id, name="RefundOnlyBudget",
+        type="checking", balance=Decimal("0"), currency="BRL",
+    )
+    session.add(account)
+    await create_budget(
+        session, test_workspace.id, test_user.id,
+        BudgetCreate(
+            category_id=test_categories[0].id, amount=Decimal("100"),
+            month=date(2025, 3, 1),
+        ),
+    )
+    await session.commit()
+    session.add(Transaction(
+        id=uuid.uuid4(), user_id=test_user.id, account_id=account.id,
+        category_id=test_categories[0].id, description="Pending refund",
+        amount=Decimal("-472.46"), date=date(2025, 3, 10), type="debit",
+        source="manual", status="pending", created_at=datetime.now(timezone.utc),
+    ))
+    await session.commit()
+
+    comparisons = await get_budget_vs_actual(
+        session, test_workspace.id, test_user.id, month=date(2025, 3, 1)
+    )
+    comp = next(c for c in comparisons if c.category_id == test_categories[0].id)
+    assert comp.projected_amount == Decimal("0")
+    assert comp.percentage_used == 0

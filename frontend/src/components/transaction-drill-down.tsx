@@ -13,6 +13,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import type { Transaction } from '@/types'
 import { formatCurrency } from '@/lib/format'
+import { isInflow } from '@/lib/transaction-direction'
 
 export type DrillDownFilter = {
   title: string
@@ -182,14 +183,14 @@ export function TransactionDrillDown({
   // amount_primary; if it's missing we can't convert, so skip the row
   // instead of adding a raw foreign amount as if it were primary. This
   // matches how get_summary computes monthly_*_primary on the backend.
-  const { absTotal, postedTotal, pendingTotal, projectedTotal } =
-    sumDrillDownTotals(displayItems, userCurrency)
+  const { total, postedTotal, pendingTotal, projectedTotal } =
+    sumDrillDownTotals(displayItems, userCurrency, filter?.type ?? null)
 
   // Break the total down whenever some of it is money that has not settled,
   // whether it is pending or still only projected. Gating on pending alone
   // hid the projected line from a panel that happened to have no pending row,
   // even though the total it sits under already counted the projection.
-  const hasUnsettledTotal = pendingTotal > 0 || projectedTotal > 0
+  const hasUnsettledTotal = pendingTotal !== 0 || projectedTotal !== 0
 
   return (
     <>
@@ -285,10 +286,10 @@ export function TransactionDrillDown({
                   <div className="text-right shrink-0">
                     <span
                       className={`text-sm font-semibold tabular-nums ${
-                        item.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'
+                        isInflow(item) ? 'text-emerald-600' : 'text-rose-500'
                       }`}
                     >
-                      {item.type === 'credit' ? '+' : '-'}
+                      {isInflow(item) ? '+' : '-'}
                       {mask(formatCurrency(Math.abs(item.amount), item.currency ?? userCurrency, locale))}
                     </span>
                     {item.currency !== userCurrency && item.amountPrimary != null && (
@@ -321,7 +322,7 @@ export function TransactionDrillDown({
                   <span>{t('dashboard.drillDownPendingTotal')}</span>
                   <span className="tabular-nums text-foreground">{mask(formatCurrency(pendingTotal, userCurrency, locale))}</span>
                 </div>
-                {projectedTotal > 0 && (
+                {projectedTotal !== 0 && (
                   <div className="flex items-center justify-between gap-4 text-xs text-muted-foreground">
                     <span>{t('transactions.projected')}</span>
                     <span className="tabular-nums text-foreground">{mask(formatCurrency(projectedTotal, userCurrency, locale))}</span>
@@ -329,7 +330,7 @@ export function TransactionDrillDown({
                 )}
                 <div className="flex items-center justify-between gap-4 border-t border-border pt-2 mt-2">
                   <span className="text-xs font-medium text-muted-foreground">{t('dashboard.drillDownShownTotal')}</span>
-                  <span className="text-sm font-bold tabular-nums text-foreground">{mask(formatCurrency(absTotal, userCurrency, locale))}</span>
+                  <span className="text-sm font-bold tabular-nums text-foreground">{mask(formatCurrency(total, userCurrency, locale))}</span>
                 </div>
               </div>
             ) : (
@@ -337,11 +338,11 @@ export function TransactionDrillDown({
                 <span className="text-xs text-muted-foreground">
                   {t('dashboard.drillDownTotal', {
                     count: displayItems.length,
-                    total: mask(formatCurrency(absTotal, userCurrency, locale)),
+                    total: mask(formatCurrency(total, userCurrency, locale)),
                   })}
                 </span>
                 <span className="text-sm font-bold tabular-nums text-foreground">
-                  {mask(formatCurrency(absTotal, userCurrency, locale))}
+                  {mask(formatCurrency(total, userCurrency, locale))}
                 </span>
               </div>
             )}

@@ -44,6 +44,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
+import { isInflow } from '@/lib/transaction-direction'
 
 // Rows per "Show more" on a non-credit-card account. Balances come from the
 // server, so they hold whatever has been loaded (#1202).
@@ -1751,8 +1752,8 @@ export default function AccountDetailPage() {
                             <span className="text-muted-foreground">—</span>
                           )}
                         </td>
-                        <td className={`px-2 sm:px-4 py-3 text-right text-xs sm:text-sm font-semibold tabular-nums whitespace-nowrap ${tx.is_ignored ? 'text-gray-500' : tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
-                          {mask(`${tx.is_ignored ? ' ' : tx.type === 'credit' ? '+' : '-'}${formatCurrency(Math.abs(Number(tx.amount)), tx.currency, locale)}`)}
+                        <td className={`px-2 sm:px-4 py-3 text-right text-xs sm:text-sm font-semibold tabular-nums whitespace-nowrap ${tx.is_ignored ? 'text-gray-500' : isInflow(tx) ? 'text-emerald-600' : 'text-rose-500'}`}>
+                          {mask(`${tx.is_ignored ? ' ' : isInflow(tx) ? '+' : '-'}${formatCurrency(Math.abs(Number(tx.amount)), tx.currency, locale)}`)}
                           {tx.currency !== userCurrency && tx.amount_primary != null && (
                             <span className="block text-[10px] text-muted-foreground tabular-nums">
                               {mask(formatCurrency(Math.abs(tx.amount_primary), userCurrency, locale))}

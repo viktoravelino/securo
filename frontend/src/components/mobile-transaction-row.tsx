@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next'
 import { formatCurrency } from '@/lib/format'
 import { shouldShowPendingBadge } from '@/lib/transaction-status'
 import { transactionDescription } from '@/lib/transaction-description'
+import { isInflow } from '@/lib/transaction-direction'
 
 /** Keep long merchant references on one line when there are no word breaks. */
 function hasWordBreaks(text: string): boolean {
@@ -61,7 +62,7 @@ export function MobileTransactionRow({
 
   const amountColor = tx.is_ignored
     ? 'text-gray-500'
-    : tx.type === 'credit'
+    : isInflow(tx)
       ? 'text-emerald-600'
       : 'text-rose-500'
 
@@ -178,7 +179,7 @@ export function MobileTransactionRow({
       <div className="shrink-0 text-right">
         <span className={`text-sm font-bold tabular-nums ${amountColor}`}>
           {mask(
-            `${tx.is_ignored ? ' ' : tx.type === 'credit' ? '+' : '\u2212'}${formatCurrency(
+            `${tx.is_ignored ? ' ' : isInflow(tx) ? '+' : '\u2212'}${formatCurrency(
               Math.abs(displayAmount),
               tx.currency,
               locale,

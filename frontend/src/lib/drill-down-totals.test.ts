@@ -4,6 +4,7 @@ import { sumDrillDownTotals } from '@/lib/drill-down-totals'
 import type { DrillDownTotalsItem } from '@/lib/drill-down-totals'
 
 const row = (overrides: Partial<DrillDownTotalsItem> = {}): DrillDownTotalsItem => ({
+  type: 'debit',
   amount: 100,
   amountPrimary: null,
   currency: 'USD',
@@ -18,12 +19,12 @@ describe('sumDrillDownTotals', () => {
       row({ amount: 200 }),
       row({ amount: 100, isPending: true }),
       row({ amount: 487.68, isProjected: true }),
-    ], 'USD')
+    ], 'USD', null)
 
     expect(totals.postedTotal).toBeCloseTo(200)
     expect(totals.pendingTotal).toBeCloseTo(100)
     expect(totals.projectedTotal).toBeCloseTo(487.68)
-    expect(totals.absTotal).toBeCloseTo(787.68)
+    expect(totals.total).toBeCloseTo(787.68)
   })
 
   it('keeps a projected row inside the total when the panel also has a pending one', () => {
@@ -33,11 +34,11 @@ describe('sumDrillDownTotals', () => {
     const totals = sumDrillDownTotals([
       row({ amount: 100, isPending: true }),
       row({ amount: 487.68, isProjected: true }),
-    ], 'USD')
+    ], 'USD', null)
 
     expect(totals.postedTotal + totals.pendingTotal + totals.projectedTotal)
-      .toBeCloseTo(totals.absTotal)
-    expect(totals.absTotal).toBeCloseTo(587.68)
+      .toBeCloseTo(totals.total)
+    expect(totals.total).toBeCloseTo(587.68)
   })
 
   it('never loses a row: the three buckets always rebuild the total', () => {
@@ -46,39 +47,63 @@ describe('sumDrillDownTotals', () => {
       row({ amount: 20, isPending: true }),
       row({ amount: 30, isProjected: true }),
       row({ amount: 40, isPending: true, isProjected: true }),
-    ], 'USD')
+    ], 'USD', null)
 
     expect(totals.postedTotal + totals.pendingTotal + totals.projectedTotal)
-      .toBeCloseTo(totals.absTotal)
+      .toBeCloseTo(totals.total)
   })
 
   it('counts a foreign row through its primary amount', () => {
     expect(sumDrillDownTotals([
       row({ amount: 2500, amountPrimary: 487.68, currency: 'BRL' }),
-    ], 'USD')).toMatchObject({ absTotal: 487.68, postedTotal: 487.68 })
+    ], 'USD', null)).toMatchObject({ total: 487.68, postedTotal: 487.68 })
   })
 
   it('skips a foreign row with no conversion rather than counting it raw', () => {
     expect(sumDrillDownTotals([
       row({ amount: 2500, amountPrimary: null, currency: 'BRL' }),
-    ], 'USD')).toEqual({
-      absTotal: 0,
+    ], 'USD', null)).toEqual({
+      total: 0,
       postedTotal: 0,
       pendingTotal: 0,
       projectedTotal: 0,
     })
   })
 
-  it('reads amounts as magnitudes, whatever sign they arrive with', () => {
+  it('nets a negative debit against the spending it repays in a debit-filtered list', () => {
+    const totals = sumDrillDownTotals([
+      row({ amount: 314.97 }),
+      row({ amount: 314.97 }),
+      row({ amount: -472.46 }),
+    ], 'USD', 'debit')
+
+    expect(totals.total).toBeCloseTo(157.48)
+    expect(totals.postedTotal).toBeCloseTo(157.48)
+  })
+
+  it('shows a debit-filtered list of only a repayment as negative spending', () => {
+    expect(sumDrillDownTotals([row({ amount: -472.46 })], 'USD', 'debit').total)
+      .toBeCloseTo(-472.46)
+  })
+
+  it('reads a credit-filtered list in the inflow direction', () => {
     expect(sumDrillDownTotals([
-      row({ amount: -100 }),
-      row({ amount: 100 }),
-    ], 'USD')).toMatchObject({ absTotal: 200, postedTotal: 200 })
+      row({ type: 'credit', amount: 100 }),
+      row({ type: 'credit', amount: 50, isPending: true }),
+      row({ type: 'credit', amount: -30 }),
+    ], 'USD', 'credit')).toMatchObject({ total: 120, postedTotal: 70, pendingTotal: 50 })
+  })
+
+  it('sums magnitudes when there is no type filter', () => {
+    expect(sumDrillDownTotals([
+      row({ type: 'credit', amount: 5000 }),
+      row({ amount: 4800 }),
+    ], 'USD', null).total).toBeCloseTo(9800)
   })
 
   it('returns zeroes for an empty panel', () => {
-    expect(sumDrillDownTotals([], 'USD')).toEqual({
-      absTotal: 0,
+    expect(sumDrillDownTotals([], 'USD', null)).toEqual({
+      total: 0,
       postedTotal: 0,
       pendingTotal: 0,
       projectedTotal: 0,

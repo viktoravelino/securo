@@ -1502,3 +1502,67 @@ def test_clean_logo_url_drops_overlong_urls():
     assert _clean_logo_url("https://long.example/" + "a" * 500) is None
     assert _clean_logo_url("   ") is None
     assert _clean_logo_url(None) is None
+
+
+@pytest.mark.asyncio
+async def test_get_account_summary_nets_negative_debit(session: AsyncSession, test_user, test_workspace):
+    """Debits 314.97, 314.97 and -472.46 total 157.48, matching the balance math."""
+    account = await _make_account(session, test_user.id, "Neg Debit Summary")
+    today = date.today()
+    for amount in (314.97, 314.97, -472.46):
+        await _add_txn(session, test_user.id, account.id, amount, "debit", today)
+
+    summary = await get_account_summary(session, account.id, test_workspace.id)
+    assert summary is not None
+    assert summary["monthly_expenses"] == pytest.approx(157.48)
+    assert summary["current_balance"] == pytest.approx(-157.48)
+
+
+@pytest.mark.asyncio
+async def test_get_account_summary_credit_card_bill_nets_negative_debit(
+    session: AsyncSession, test_user, test_workspace
+):
+    """A card's bill total nets a negative purchase; credits still reduce it."""
+    account = await _make_account(session, test_user.id, "Neg Debit Card", acc_type="credit_card")
+    today = date.today()
+    for amount in (314.97, 314.97, -472.46):
+        await _add_txn(session, test_user.id, account.id, amount, "debit", today)
+    await _add_txn(session, test_user.id, account.id, 7.48, "credit", today)
+
+    summary = await get_account_summary(session, account.id, test_workspace.id)
+    assert summary is not None
+    assert summary["monthly_expenses"] == pytest.approx(150.0)
+
+
+@pytest.mark.asyncio
+async def test_get_account_summary_clamps_refund_only_totals(
+    session: AsyncSession, test_user, test_workspace
+):
+    """Non-card refund-only expenses and a negative credit clamp to 0, pending included."""
+    account = await _make_account(session, test_user.id, "Refund Only Summary")
+    today = date.today()
+    await _add_txn(session, test_user.id, account.id, -472.46, "debit", today)
+    await _add_txn(session, test_user.id, account.id, -30, "credit", today)
+    await _add_txn(session, test_user.id, account.id, -10, "debit", today, status="pending")
+
+    summary = await get_account_summary(session, account.id, test_workspace.id)
+    assert summary is not None
+    assert summary["monthly_expenses"] == 0
+    assert summary["monthly_income"] == 0
+    assert summary["projected_expenses"] == 0
+    assert summary["projected_income"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_account_summary_pending_negative_debit_nets_projection(
+    session: AsyncSession, test_user, test_workspace
+):
+    """A pending -40 debit offsets a pending 100 debit in the projection."""
+    account = await _make_account(session, test_user.id, "Pending Neg Summary")
+    today = date.today()
+    await _add_txn(session, test_user.id, account.id, 100, "debit", today, status="pending")
+    await _add_txn(session, test_user.id, account.id, -40, "debit", today, status="pending")
+
+    summary = await get_account_summary(session, account.id, test_workspace.id)
+    assert summary is not None
+    assert summary["projected_expenses"] == pytest.approx(60.0)

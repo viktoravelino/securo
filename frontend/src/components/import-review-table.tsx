@@ -20,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { isInflow } from '@/lib/transaction-direction'
 
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/
 
@@ -207,8 +208,8 @@ export function ImportReviewTable({
                   <TableCell className={`py-2.5 text-sm ${tx.excluded ? 'line-through text-muted-foreground' : 'text-foreground'}`}>
                     {tx.description}
                   </TableCell>
-                  <TableCell className={`py-2.5 text-right text-sm font-bold tabular-nums ${tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
-                    {tx.type === 'credit' ? '+' : '−'}{formatCurrency(Math.abs(Number(tx.amount)), userCurrency, locale)}
+                  <TableCell className={`py-2.5 text-right text-sm font-bold tabular-nums ${isInflow(tx) ? 'text-emerald-600' : 'text-rose-500'}`}>
+                    {isInflow(tx) ? '+' : '−'}{formatCurrency(Math.abs(Number(tx.amount)), userCurrency, locale)}
                   </TableCell>
                   <TableCell className="py-2.5">
                     <CategorySelect

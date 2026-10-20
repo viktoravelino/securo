@@ -29,6 +29,7 @@ import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { formatCurrency } from '@/lib/format'
+import { isInflow } from '@/lib/transaction-direction'
 
 const TH = 'text-xs font-medium text-muted-foreground py-3'
 
@@ -199,11 +200,11 @@ function RecurringTab() {
               {recurringList.map((rt) => (
                 <tr key={rt.id} className="border-b border-border last:border-0 hover:bg-muted transition-colors">
                   <td className="py-3 pl-4 sm:pl-5 text-sm font-medium text-foreground">{rt.description}</td>
-                  <td className={`py-3 text-xs sm:text-sm font-bold tabular-nums ${rt.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
-                    {mask(`${rt.type === 'credit' ? '+' : '−'}${formatCurrency(rt.amount, rt.currency, locale)}`)}
+                  <td className={`py-3 text-xs sm:text-sm font-bold tabular-nums ${isInflow(rt) ? 'text-emerald-600' : 'text-rose-500'}`}>
+                    {mask(`${isInflow(rt) ? '+' : '−'}${formatCurrency(Math.abs(rt.amount), rt.currency, locale)}`)}
                     {rt.currency !== userCurrency && rt.amount_primary != null && (
                       <div className="flex items-center gap-1 text-[11px] font-normal text-muted-foreground">
-                        <span>{mask(formatCurrency(rt.amount_primary, userCurrency, locale))}</span>
+                        <span>{mask(formatCurrency(Math.abs(rt.amount_primary), userCurrency, locale))}</span>
                         <span title={t('recurring.fxEstimate', { rate: rt.fx_rate_used?.toFixed(4) ?? '–' })}>
                           <Info size={11} className="inline opacity-60" />
                         </span>
