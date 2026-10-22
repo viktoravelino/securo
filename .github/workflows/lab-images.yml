@@ -1,0 +1,60 @@
+# Fork only. Builds the lab images when a lab tag is pushed, for example v0.16.5-lab.1.
+# The image tag is the git tag. Platform: linux/amd64 only.
+# The file has a lab- prefix so it never conflicts with an upstream file.
+name: Lab images
+
+on:
+  push:
+    tags: ['v*-lab.*']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [backend, frontend]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # The app compares its version with the latest upstream release. "-lab.1" is a
+      # semver pre-release and sorts before the release, so the app would show a false
+      # update banner. "+lab.1" is build metadata and sorts equal to the release.
+      - name: App version
+        id: version
+        run: echo "app=${GITHUB_REF_NAME/-lab./+lab.}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/securo-${{ matrix.component }}
+          tags: type=ref,event=tag
+
+      # Only the frontend Dockerfile reads VITE_APP_VERSION. The backend ignores it.
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: ./${{ matrix.component }}
+          file: ./${{ matrix.component }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VITE_APP_VERSION=${{ steps.version.outputs.app }}
+          cache-from: type=gha,scope=lab-${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=lab-${{ matrix.component }}
