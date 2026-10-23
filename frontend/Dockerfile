@@ -17,6 +17,11 @@ FROM nginxinc/nginx-unprivileged:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY default.conf.template /etc/nginx/templates/default.conf.template
 
+# Largest request body nginx accepts. It covers the largest default backend
+# upload limit, 25 MB for agents knowledge files. Override it with the
+# NGINX_CLIENT_MAX_BODY_SIZE environment variable.
+ENV NGINX_CLIENT_MAX_BODY_SIZE=25m
+
 # Have the image derive the DNS resolver from /etc/resolv.conf, so the same
 # image proxies to the backend on Docker, Podman, Kubernetes and Railway with
 # no per-platform configuration. 19-resolver.envsh turns that into

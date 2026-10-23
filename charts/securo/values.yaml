@@ -112,6 +112,10 @@ backend:
 # Frontend configuration
 frontend:
   backendUrl: ""
+  # Largest request body the frontend nginx accepts, as a quoted nginx size such
+  # as "50m". Empty means "25m". Keep it at or above the backend upload limits:
+  # 10 MB for attachments and 25 MB for agents knowledge files by default.
+  clientMaxBodySize: ""
   replicaCount: 1
   image:
     repository: ghcr.io/securo-finance/securo-frontend

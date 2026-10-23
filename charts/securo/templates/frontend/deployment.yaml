@@ -47,6 +47,10 @@ spec:
               value: {{ default (printf "http://%s-backend.%s.svc.cluster.local:%v" (include "securo.fullname" .) .Release.Namespace .Values.backend.service.port) .Values.frontend.backendUrl | quote }}
             - name: FRONTEND_URL
               value: {{ include "securo.frontendUrl" . | quote }}
+            # Always set: the chart's nginx configmap needs it, also with frontend
+            # images older than the image default in frontend/Dockerfile.
+            - name: NGINX_CLIENT_MAX_BODY_SIZE
+              value: {{ .Values.frontend.clientMaxBodySize | default "25m" | quote }}
           volumeMounts:
             - name: nginx-template
               mountPath: /etc/nginx/templates/default.conf.template

@@ -11,9 +11,10 @@ data:
         listen 8080;
         root /usr/share/nginx/html;
         index index.html;
-        # Attachments go up to STORAGE_MAX_FILE_SIZE_MB (10 MB); nginx's default limit is 1 MB.
+        # Largest request body nginx passes to the backend. Set by
+        # NGINX_CLIENT_MAX_BODY_SIZE (frontend.clientMaxBodySize in values.yaml).
         # Mirrors frontend/default.conf.template.
-        client_max_body_size 15m;
+        client_max_body_size ${NGINX_CLIENT_MAX_BODY_SIZE};
 
         # API proxy to backend.
         # Resolve the backend hostname at request time instead of caching the IP
