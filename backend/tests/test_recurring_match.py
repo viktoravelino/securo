@@ -360,6 +360,49 @@ async def test_generate_pending_links_existing_real_tx(
 
 
 @pytest.mark.asyncio
+async def test_negative_debit_never_pays_a_bill(session, test_user, test_workspace, account):
+    """A debit below zero is money back: no lookup links it to a bill."""
+    bill = await _make_bill(session, test_workspace, test_user, account)
+    placeholder = await _add_tx(
+        session, test_user, test_workspace, account,
+        date=date(2025, 1, 10), source="recurring", external_id=None,
+        recurring_transaction_id=bill.id, description="Netflix Subscription",
+    )
+    refund = Decimal("-39.90")
+    assert await rms.find_bill_for_incoming(
+        session, test_user.id, account.id, refund, "BRL", "debit",
+        date(2025, 1, 10), "NETFLIX SUBSCRIPTION",
+    ) is None
+    assert await rms.find_placeholder_for_incoming(
+        session, account.id, refund, "BRL", "debit",
+        date(2025, 1, 10), "NETFLIX SUBSCRIPTION",
+    ) is None
+    # The same charge with a positive amount still matches both.
+    found = await rms.find_placeholder_for_incoming(
+        session, account.id, -refund, "BRL", "debit",
+        date(2025, 1, 10), "NETFLIX SUBSCRIPTION",
+    )
+    assert found is not None and found.id == placeholder.id
+
+
+@pytest.mark.asyncio
+async def test_generate_pending_ignores_negative_debit(session, test_user, test_workspace, account):
+    """A refund near the due date stays unlinked and the occurrence gets its placeholder."""
+    await _make_bill(session, test_workspace, test_user, account)
+    refund = await _add_tx(
+        session, test_user, test_workspace, account,
+        date=date(2025, 1, 11), source="sync", external_id="bank-1",
+        amount=Decimal("-39.90"),
+    )
+
+    count = await generate_pending(session, test_user.id, up_to=date(2025, 1, 20))
+
+    assert count == 1
+    await session.refresh(refund)
+    assert refund.recurring_transaction_id is None
+
+
+@pytest.mark.asyncio
 async def test_generate_pending_matches_real_transaction_on_effective_date(
     session, test_user, test_workspace, account
 ):

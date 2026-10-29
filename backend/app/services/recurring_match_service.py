@@ -161,6 +161,9 @@ async def find_real_tx_for_occurrence(
             Transaction.source.in_(_REAL_SOURCES),
             Transaction.currency == recurring.currency,
             Transaction.type == recurring.type,
+            # A negative amount is money back, so it never pays a bill. The
+            # engine compares magnitudes and cannot tell it from a charge.
+            Transaction.amount >= 0,
             Transaction.date >= occurrence_date - timedelta(days=before),
             Transaction.date <= occurrence_date + timedelta(days=after),
         )
@@ -212,6 +215,10 @@ async def find_placeholder_for_incoming(
     far as the wider of the two on each side and the policies decide from
     there. The workspace's rule is resolved before the query for that reason.
     """
+    # A negative amount is money back, so it never pays a bill. The engine
+    # compares magnitudes and cannot tell it from a charge.
+    if amount < 0:
+        return None
     account = await session.get(Account, account_id)
     if account is None:
         return None
@@ -317,6 +324,11 @@ async def find_bill_for_incoming(
     under its own policy rather than all of them under one.
     """
     from app.services.recurring_transaction_service import adjust_weekend_date
+
+    # A negative amount is money back, so it never pays a bill. The engine
+    # compares magnitudes and cannot tell it from a charge.
+    if amount < 0:
+        return None
 
     result = await session.execute(
         select(RecurringTransaction).where(
