@@ -30,8 +30,13 @@ import { CashflowSankey } from '@/components/reports/CashflowSankey'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
-import type { ReportResponse, CategoryTrendItem } from '@/types'
-import { formatCurrency } from '@/lib/format'
+import type { ReportResponse, CategoryTrendItem, ReportCompareMode } from '@/types'
+import { formatCurrency, formatCompact } from '@/lib/format'
+import { formatDateRange } from '@/lib/date-range-format'
+import { groupComposition, type GroupSlice } from '@/lib/composition-groups'
+import { buildComparisonRows, deltaColorClass, deltaPercent } from '@/lib/report-comparison'
+import { CategoryStackChart } from '@/components/reports/CategoryStackChart'
+import { PeriodComparisonTable } from '@/components/reports/PeriodComparisonTable'
 import { localDateString, todayInTimezone } from '@/lib/date-utils'
 import { monthLabel } from '@/lib/month-utils'
 import { periodWindow, windowMonths, type PeriodPreset } from '@/lib/report-period'
@@ -62,15 +67,6 @@ const SLICE_COLORS = [
   '#06B6D4', // cyan
 ]
 const OTHER_SLICE_COLOR = '#9CA3AF'
-
-function formatCompact(value: number, currency = 'USD', locale = 'en-US') {
-  return new Intl.NumberFormat(locale, {
-    style: 'currency',
-    currency,
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(value)
-}
 
 /** "Apr 2026" from a YYYY-MM-DD date, in the date locale. */
 function formatShortMonth(isoDate: string, locale: string) {
@@ -257,8 +253,18 @@ export default function ReportsPage() {
     saveReportsRange(activeTab, { rangeKey, from: customFrom, to: customTo, interval, periodOffset })
   }, [activeTab, rangeKey, customFrom, customTo, interval, periodOffset])
   const [compositionView, setCompositionView] = useState<string>('netWorth')
+  // Category group the donut is narrowed to (Income vs Expenses, By Income / By Expenses).
+  const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null)
+
+  // Change the composition view and leave any narrowed group.
+  const changeCompositionView = (view: string) => {
+    setCompositionView(view)
+    setSelectedGroupKey(null)
+  }
   const [sparklineView, setSparklineView] = useState<'byExpenses' | 'byIncome'>('byExpenses')
   const [sparklinePage, setSparklinePage] = useState(0)
+  const [stackMode, setStackMode] = useState<'absolute' | 'percent'>('absolute')
+  const [compareMode, setCompareMode] = useState<ReportCompareMode | 'off'>('off')
   const [cashFlowBaseline, setCashFlowBaseline] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   // Active Collection filter (issue #105): scope all report tabs to its
@@ -341,7 +347,7 @@ export default function ReportsPage() {
   const handleSelectTab = (key: string) => {
     const nextTab = REPORT_TABS.find((tab) => tab.key === key) ?? REPORT_TABS[0]
     setActiveTab(key)
-    setCompositionView(key === 'net_worth' ? 'netWorth' : 'net')
+    changeCompositionView(key === 'net_worth' ? 'netWorth' : 'net')
     setSparklinePage(0)
     setSelectedDate(null)
     const remembered = storedReportsRange(nextTab)
@@ -402,13 +408,16 @@ export default function ReportsPage() {
     setSelectedDate(null)
   }
 
+  // Only the Income vs Expenses tab compares periods.
+  const compare = activeTab === 'income_expenses' && compareMode !== 'off' ? compareMode : undefined
+
   const { data, isLoading, isError, error, refetch } = useQuery<ReportResponse>({
-    queryKey: ['reports', activeTab, rangeKey, months, period ?? null, days ?? null, interval, isCashFlow ? cashFlowBaseline : false, activeAccountIds, activeWalletIds, apiStart ?? null, apiEnd ?? null],
+    queryKey: ['reports', activeTab, rangeKey, months, period ?? null, days ?? null, interval, isCashFlow ? cashFlowBaseline : false, activeAccountIds, activeWalletIds, apiStart ?? null, apiEnd ?? null, compare ?? null],
     queryFn: () =>
       isCashFlow
         ? reports.cashFlow(months, interval, cashFlowBaseline, acctIds)
         : activeTab === 'income_expenses' || isMoneyMap
-          ? reports.incomeExpenses(months, interval, acctIds, period, days, apiStart, apiEnd)
+          ? reports.incomeExpenses(months, interval, acctIds, period, days, apiStart, apiEnd, compare)
           : reports.netWorth(months, interval, acctIds, walletIds, period, apiStart, apiEnd),
     // Only request a custom report with both committed endpoints.
     enabled: currentTab.enabled && !(noAccounts && activeTab !== 'net_worth') && (!isCustomRange || hasCustomRange),
@@ -500,8 +509,17 @@ export default function ReportsPage() {
 
   const compositionBreakdownData = snapshotBreakdownData ?? breakdownData
 
-  const changePrefix = (summary?.change_amount ?? 0) >= 0 ? '+' : ''
-  const changeColor = (summary?.change_amount ?? 0) >= 0 ? 'text-emerald-600' : 'text-rose-500'
+  // With a comparison on, the hero shows the net change against it instead of
+  // the change since the start of the window.
+  const comparison = data?.comparison ?? null
+  const heroChangeAmount = comparison && summary
+    ? summary.primary_value - comparison.summary.primary_value
+    : summary?.change_amount ?? 0
+  const heroChangePercent = comparison && summary
+    ? deltaPercent(summary.primary_value, comparison.summary.primary_value)
+    : summary?.change_percent ?? null
+  const changePrefix = heroChangeAmount >= 0 ? '+' : ''
+  const changeColor = heroChangeAmount >= 0 ? 'text-emerald-600' : 'text-rose-500'
 
   const tooltipStyle = {
     background: 'var(--card)',
@@ -691,6 +709,29 @@ export default function ReportsPage() {
     return result
   })()
 
+  // Group the donut by category group on the Income vs Expenses By Income / By Expenses views.
+  const groupDonutActive =
+    activeTab === 'income_expenses' && (compositionView === 'byIncome' || compositionView === 'byExpenses')
+  const groupSlices: GroupSlice[] = groupDonutActive
+    ? groupComposition(composition, compositionView === 'byIncome' ? 'income' : 'expenses', {
+        noGroup: t('reports.noGroup'),
+        uncategorized: t('reports.uncategorized'),
+      })
+    : []
+  const selectedGroup = groupSlices.find((g) => g.key === selectedGroupKey) ?? null
+  const canSelectGroup = groupDonutActive && !selectedGroup
+
+  type DonutSlice = { name: string; value: number; color: string; children?: { name: string; value: number; color: string }[] }
+  const effectiveInner: DonutSlice[] = groupDonutActive
+    ? selectedGroup ? selectedGroup.children : groupSlices
+    : innerDonutData
+  const effectiveOuter: DonutSlice[] = groupDonutActive
+    ? selectedGroup ? [] : groupSlices.flatMap((g) => g.children)
+    : outerDonutData
+  const effectiveDetail: DonutSlice[] = groupDonutActive
+    ? selectedGroup ? selectedGroup.children : groupSlices
+    : compositionDetail
+
   return (
     <div>
       <PageHeader
@@ -840,6 +881,33 @@ export default function ReportsPage() {
                 </button>
               </div>
             )}
+            {activeTab === 'income_expenses' && (
+              <div
+                className="flex items-center rounded-lg border border-border bg-card overflow-hidden"
+                data-testid="reports-compare"
+              >
+                <span className="px-2 text-xs text-muted-foreground">{t('reports.compare')}</span>
+                {([
+                  ['off', 'compareOff'],
+                  ['previous', 'comparePrevious'],
+                  ['year_ago', 'compareYearAgo'],
+                ] as const).map(([mode, labelKey]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-pressed={compareMode === mode}
+                    onClick={() => { setCompareMode(mode); setSelectedDate(null) }}
+                    className={`px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                      compareMode === mode
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                    }`}
+                  >
+                    {t(`reports.${labelKey}`)}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className={`flex items-center rounded-lg border border-border bg-card overflow-hidden ${isMoneyMap ? 'hidden' : ''}`}>
               {intervalOptions.map((opt) => (
                 <button
@@ -929,15 +997,17 @@ export default function ReportsPage() {
                   <p className="text-3xl font-bold tabular-nums text-foreground">
                     {mask(formatCurrency(summary?.primary_value ?? 0, userCurrency, locale))}
                   </p>
-                  {summary?.change_percent !== null && summary?.change_percent !== undefined && (
+                  {heroChangePercent !== null && (
                     <span className={`text-sm font-semibold tabular-nums ${changeColor}`}>
-                      {changePrefix}{summary.change_percent.toFixed(1)}%
+                      {changePrefix}{heroChangePercent.toFixed(1)}%
                     </span>
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  {mask(`${changePrefix}${formatCurrency(summary?.change_amount ?? 0, userCurrency, locale)}`)}
-                  {' '}{t(meta?.type === 'cash_flow' ? 'reports.vsToday' : 'reports.vsStart')}
+                  {mask(`${changePrefix}${formatCurrency(heroChangeAmount, userCurrency, locale)}`)}
+                  {' '}{comparison
+                    ? t(compareMode === 'previous' ? 'reports.vsPrevious' : 'reports.vsYearAgo')
+                    : t(meta?.type === 'cash_flow' ? 'reports.vsToday' : 'reports.vsStart')}
                 </p>
               </div>
               <div className="flex flex-wrap gap-6">
@@ -955,6 +1025,16 @@ export default function ReportsPage() {
                     <p className="text-lg font-bold tabular-nums text-foreground">
                       {mask(formatCurrency(b.value, userCurrency, locale))}
                     </p>
+                    {comparison && (b.key === 'income' || b.key === 'expenses') && (() => {
+                      const previous = comparison.summary.breakdowns.find((c) => c.key === b.key)?.value ?? 0
+                      const delta = b.value - previous
+                      const pct = deltaPercent(b.value, previous)
+                      return (
+                        <p className={`text-[11px] tabular-nums ${deltaColorClass(delta, b.key)}`}>
+                          {mask(`${delta > 0 ? '+' : ''}${formatCurrency(delta, userCurrency, locale)}${pct === null ? '' : ` (${pct > 0 ? '+' : ''}${pct.toFixed(1)}%)`}`)}
+                        </p>
+                      )
+                    })()}
                   </div>
                 ))}
                 {/* Cash flow only: the lowest point of the projection. It keeps
@@ -1331,7 +1411,7 @@ export default function ReportsPage() {
                 <button
                   key={opt}
                   type="button"
-                  onClick={() => setCompositionView(opt)}
+                  onClick={() => changeCompositionView(opt)}
                   className={`px-2 py-1 text-[11px] font-semibold text-center transition-colors ${
                     compositionView === opt
                       ? 'bg-primary text-primary-foreground'
@@ -1365,16 +1445,51 @@ export default function ReportsPage() {
                   ))}
                 </div>
               </div>
-            ) : innerDonutData.length > 0 ? (
+            ) : effectiveInner.length > 0 ? (
                 (() => {
-                  const hasOuter = outerDonutData.length > 0
-                  const donutTotal = innerDonutData.reduce((s, d) => s + d.value, 0)
+                  const hasOuter = effectiveOuter.length > 0
+                  const donutTotal = effectiveInner.reduce((s, d) => s + d.value, 0)
+                  const morePopover = (hiddenCount: number) =>
+                    hiddenCount > 0 && (
+                              
+                                <Popover>
+                                  <PopoverTrigger asChild>
+                                    <button
+                                      type="button"
+                                      className="text-[11px] font-semibold text-primary hover:text-primary/80 transition-colors"
+                                    >
+                                      +{hiddenCount} more
+                                    </button>
+                                  </PopoverTrigger>
+                                  <PopoverContent align="center" side="top" sideOffset={8} className="w-64 p-3">
+                                    <p className="text-xs font-semibold text-foreground mb-2">
+                                      {t('reports.composition')}
+                                    </p>
+                                    <div className="flex flex-col gap-1.5 max-h-72 overflow-y-auto pr-2">
+                                      {effectiveDetail.map((d, i) => {
+                                        const pct = donutTotal > 0 ? ((d.value / donutTotal) * 100).toFixed(1) : '0'
+                                        return (
+                                          <div key={`${i}-${d.name}`} className="flex items-center gap-2">
+                                            <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
+                                            <span className="text-[11px] text-muted-foreground flex-1 truncate">
+                                              {d.name.length > 25 ? d.name.slice(0, 22) + '…' : d.name}
+                                            </span>
+                                            <span className="text-xs text-muted-foreground shrink-0">
+                                              {privacyMode ? MASK : `${formatCurrency(d.value, userCurrency, locale)} (${pct}%)`}
+                                            </span>
+                                          </div>
+                                        )
+                                      })}
+                                    </div>
+                                  </PopoverContent>
+                                </Popover>
+                                                  )
                   return (
                     <div className="flex flex-col items-center">
                       <div className="relative" style={{ width: 200, height: 200 }}>
                         <PieChart width={200} height={200}>
                             <Pie
-                              data={innerDonutData}
+                              data={effectiveInner}
                               cx="50%"
                               cy="50%"
                               innerRadius={55}
@@ -1383,14 +1498,18 @@ export default function ReportsPage() {
                               dataKey="value"
                               stroke="var(--card)"
                               strokeWidth={hasOuter ? 2 : 0}
+                              style={canSelectGroup ? { cursor: 'pointer' } : undefined}
+                              onClick={(_, idx) => {
+                                if (canSelectGroup) setSelectedGroupKey(groupSlices[idx]?.key ?? null)
+                              }}
                             >
-                              {innerDonutData.map((entry, idx) => (
+                              {effectiveInner.map((entry, idx) => (
                                 <Cell key={idx} fill={entry.color} />
                               ))}
                             </Pie>
                             {hasOuter && (
                               <Pie
-                                data={outerDonutData}
+                                data={effectiveOuter}
                                 cx="50%"
                                 cy="50%"
                                 innerRadius={64}
@@ -1400,7 +1519,7 @@ export default function ReportsPage() {
                                 stroke="var(--card)"
                                 strokeWidth={2}
                               >
-                                {outerDonutData.map((entry, idx) => (
+                                {effectiveOuter.map((entry, idx) => (
                                   <Cell key={idx} fill={entry.color} />
                                 ))}
                               </Pie>
@@ -1448,8 +1567,8 @@ export default function ReportsPage() {
                             />
                         </PieChart>
                         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style={{ zIndex: 0 }}>
-                          <span className="text-[10px] text-muted-foreground">
-                            {compositionView === 'assetsAndAccounts'
+                          <span className="text-[10px] text-muted-foreground max-w-[90px] truncate">
+                            {selectedGroup ? selectedGroup.name : compositionView === 'assetsAndAccounts'
                               ? t(isHistoricalSnapshot ? 'reports.youOwned' : 'reports.youOwn', { defaultValue: isHistoricalSnapshot ? 'You Owned' : 'You Own' })
                               : compositionView === 'liabilities'
                                 ? t(isHistoricalSnapshot ? 'reports.youOwed' : 'reports.youOwe', { defaultValue: isHistoricalSnapshot ? 'You Owed' : 'You Owe' })
@@ -1460,34 +1579,65 @@ export default function ReportsPage() {
                           </span>
                           <span className="text-base font-bold text-foreground tabular-nums">
                             {mask(formatCompact(
-                              snapshotTrendPoint
+                              selectedGroup ? selectedGroup.value : snapshotTrendPoint
                                 ? compositionView === 'netWorth' || compositionView === 'net' || !compositionView
                                   ? snapshotTrendPoint.value
-                                  : innerDonutData.reduce((s, d) => s + d.value, 0)
+                                  : effectiveInner.reduce((s, d) => s + d.value, 0)
                                 : compositionView === 'netWorth' || compositionView === 'net' || !compositionView
                                   ? meta?.type === 'cash_flow'
                                     ? (summary?.change_amount ?? 0)
                                     : (summary?.primary_value ?? 0)
-                                  : innerDonutData.reduce((s, d) => s + d.value, 0),
+                                  : effectiveInner.reduce((s, d) => s + d.value, 0),
                               userCurrency, locale
                             ))}
                           </span>
                         </div>
                       </div>
                       <div key={compositionView} className="flex flex-col items-center gap-1 px-3 mt-1 w-full">
-                        <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
-                          {innerDonutData.map((d, i) => (
-                            <div key={`${i}-${d.name}`} className="flex items-center gap-1.5">
-                              <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
-                              <span className="text-[11px] text-muted-foreground whitespace-nowrap">
-                                {d.name.length > 30 ? d.name.slice(0, 27) + '…' : d.name}
-                              </span>
-                            </div>
-                          ))}
+                        {selectedGroup && (
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedGroupKey(null)}
+                              className="flex items-center gap-0.5 text-[11px] font-semibold text-primary hover:text-primary/80 transition-colors"
+                            >
+                              <ChevronLeft className="h-3 w-3" />
+                              {t('common.back')}
+                            </button>
+                            <span className="text-[11px] font-semibold text-foreground">{selectedGroup.name}</span>
+                          </div>
+                        )}
+                        {canSelectGroup && (
+                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('reports.byGroup')}</span>
+                        )}
+                        <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 items-center">
+                          {(groupDonutActive ? effectiveInner.slice(0, 8) : effectiveInner).map((d, i) => {
+                            const label = (
+                              <>
+                                <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
+                                <span className="text-[11px] text-muted-foreground whitespace-nowrap">
+                                  {d.name.length > 30 ? d.name.slice(0, 27) + '…' : d.name}
+                                </span>
+                              </>
+                            )
+                            return canSelectGroup ? (
+                              <button
+                                key={`${i}-${d.name}`}
+                                type="button"
+                                onClick={() => setSelectedGroupKey(groupSlices[i]?.key ?? null)}
+                                className="flex items-center gap-1.5 hover:text-foreground"
+                              >
+                                {label}
+                              </button>
+                            ) : (
+                              <div key={`${i}-${d.name}`} className="flex items-center gap-1.5">{label}</div>
+                            )
+                          })}
+                          {groupDonutActive && morePopover(effectiveDetail.length - 8)}
                         </div>
-                        {hasOuter && (() => {
-                          const visible = outerDonutData.slice(0, 6)
-                          const hiddenCount = compositionDetail.length - visible.length
+                        {hasOuter && !groupDonutActive && (() => {
+                          const visible = effectiveOuter.slice(0, 6)
+                          const hiddenCount = effectiveDetail.length - visible.length
                           return (
                             <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 items-center">
                               {visible.map((d, i) => (
@@ -1498,39 +1648,7 @@ export default function ReportsPage() {
                                   </span>
                                 </div>
                               ))}
-                              {hiddenCount > 0 && (
-                                <Popover>
-                                  <PopoverTrigger asChild>
-                                    <button
-                                      type="button"
-                                      className="text-[11px] font-semibold text-primary hover:text-primary/80 transition-colors"
-                                    >
-                                      +{hiddenCount} more
-                                    </button>
-                                  </PopoverTrigger>
-                                  <PopoverContent align="center" side="top" sideOffset={8} className="w-64 p-3">
-                                    <p className="text-xs font-semibold text-foreground mb-2">
-                                      {t('reports.composition')}
-                                    </p>
-                                    <div className="flex flex-col gap-1.5 max-h-72 overflow-y-auto pr-2">
-                                      {compositionDetail.map((d, i) => {
-                                        const pct = donutTotal > 0 ? ((d.value / donutTotal) * 100).toFixed(1) : '0'
-                                        return (
-                                          <div key={`${i}-${d.name}`} className="flex items-center gap-2">
-                                            <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
-                                            <span className="text-[11px] text-muted-foreground flex-1 truncate">
-                                              {d.name.length > 25 ? d.name.slice(0, 22) + '…' : d.name}
-                                            </span>
-                                            <span className="text-xs text-muted-foreground shrink-0">
-                                              {privacyMode ? MASK : `${formatCurrency(d.value, userCurrency, locale)} (${pct}%)`}
-                                            </span>
-                                          </div>
-                                        )
-                                      })}
-                                    </div>
-                                  </PopoverContent>
-                                </Popover>
-                              )}
+                              {morePopover(hiddenCount)}
                             </div>
                           )
                         })()}
@@ -1838,6 +1956,108 @@ export default function ReportsPage() {
           )}
         </div>
       </div>
+      {/* Spending by category over time */}
+      {meta?.type === 'income_expenses' && (
+        <div className="bg-card rounded-xl border border-border shadow-sm mt-5" data-testid="category-stack-card">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-5 pt-4 pb-2">
+            <h3 className="text-sm font-semibold text-foreground">
+              {t(sparklineView === 'byIncome' ? 'reports.incomeByCategory' : 'reports.spendingByCategory')}
+            </h3>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center rounded-lg border border-border bg-muted/30 overflow-hidden">
+                {(['byExpenses', 'byIncome'] as const).map((opt) => (
+                  <button
+                    key={opt}
+                    onClick={() => { setSparklineView(opt); setSparklinePage(0) }}
+                    className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                      sparklineView === opt
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                    }`}
+                  >
+                    {t(`reports.${opt}`)}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center rounded-lg border border-border bg-muted/30 overflow-hidden">
+                {(['absolute', 'percent'] as const).map((opt) => (
+                  <button
+                    key={opt}
+                    type="button"
+                    aria-pressed={stackMode === opt}
+                    onClick={() => setStackMode(opt)}
+                    className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                      stackMode === opt
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                    }`}
+                  >
+                    {t(opt === 'absolute' ? 'reports.stackAbsolute' : 'reports.stackPercent')}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="px-1 pb-4" style={{ height: 320 }}>
+            {isLoading ? (
+              <div className="px-4 h-full">
+                <Skeleton className="h-full w-full" />
+              </div>
+            ) : (
+              <CategoryStackChart
+                items={(data?.category_trend ?? []).filter(
+                  (c) => c.group === (sparklineView === 'byIncome' ? 'income' : 'expenses'),
+                )}
+                mode={stackMode}
+                currency={userCurrency}
+                locale={locale}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Period comparison */}
+      {meta?.type === 'income_expenses' && comparison && (() => {
+        const side = sparklineView === 'byIncome' ? 'income' : 'expenses'
+        const rows = buildComparisonRows(composition, comparison.composition, side)
+        return (
+          <div className="bg-card rounded-xl border border-border shadow-sm mt-5">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-5 pt-4 pb-2">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">{t('reports.periodComparison')}</h3>
+                <p className="text-xs text-muted-foreground">
+                  {t('reports.comparedWith', {
+                    range: formatDateRange(comparison.start_date, comparison.end_date, dateLocale),
+                  })}
+                </p>
+              </div>
+              <div className="flex items-center rounded-lg border border-border bg-muted/30 overflow-hidden">
+                {(['byExpenses', 'byIncome'] as const).map((opt) => (
+                  <button
+                    key={opt}
+                    onClick={() => { setSparklineView(opt); setSparklinePage(0) }}
+                    className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                      sparklineView === opt
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                    }`}
+                  >
+                    {t(`reports.${opt}`)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="px-5 pb-4">
+              {rows.length === 0 ? (
+                <p className="text-muted-foreground text-sm text-center py-16">{t('reports.noData')}</p>
+              ) : (
+                <PeriodComparisonTable rows={rows} side={side} currency={userCurrency} locale={locale} />
+              )}
+            </div>
+          </div>
+        )
+      })()}
       </>
       )}
       </>

@@ -2162,7 +2162,24 @@
     "range30d": "30Η",
     "customRange": "Προσαρμοσμένο εύρος",
     "pickCustomRange": "Επιλέξτε ημερομηνία έναρξης και λήξης",
-    "loadError": "Αποτυχία φόρτωσης αναφοράς"
+    "loadError": "Αποτυχία φόρτωσης αναφοράς",
+    "spendingByCategory": "Δαπάνες ανά κατηγορία με την πάροδο του χρόνου",
+    "incomeByCategory": "Έσοδα ανά κατηγορία με την πάροδο του χρόνου",
+    "stackAbsolute": "Ποσό",
+    "stackPercent": "Μερίδιο",
+    "compare": "Σύγκριση",
+    "compareOff": "Ανενεργό",
+    "comparePrevious": "Προηγούμενη περίοδος",
+    "compareYearAgo": "Ίδια περίοδος πέρυσι",
+    "vsPrevious": "έναντι προηγούμενης περιόδου",
+    "vsYearAgo": "έναντι ίδιας περιόδου πέρυσι",
+    "periodComparison": "Σύγκριση περιόδων",
+    "comparedWith": "Σύγκριση με {{range}}",
+    "current": "Τρέχον",
+    "previous": "Προηγούμενο",
+    "deltaPercent": "Μεταβολή %",
+    "noGroup": "Χωρίς ομάδα",
+    "byGroup": "Ανά ομάδα"
   },
   "fiscal": {
     "kind": {

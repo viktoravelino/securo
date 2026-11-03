@@ -17,12 +17,14 @@ from app.models.transaction import Transaction
 from app.models.user import User
 from app.schemas.report import (
     CategoryTrendItem,
+    ReportCompositionItem,
     ReportDataPoint,
     ReportMeta,
     ReportResponse,
     ReportSummary,
 )
 from app.services import report_service
+from app.services.report_service import _comparison_window
 from app.api.reports import (
     _add_years,
     _financial_year_start_month,
@@ -469,6 +471,13 @@ async def test_net_worth_api_validation(client, auth_headers):
     )
     assert resp.status_code == 422
 
+    resp = await client.get(
+        "/api/reports/income-expenses",
+        params={"compare": "last_week"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
     # Months out of range
     resp = await client.get(
         "/api/reports/net-worth",
@@ -525,7 +534,7 @@ async def test_income_expenses_api_accepts_ytd_period(client, auth_headers, monk
     async def fake_report(
         session, workspace_id, user_id, months, interval, currency,
         account_ids=None, period=None, days=None, financial_year_start_month=1,
-        start_date=None, end_date=None,
+        start_date=None, end_date=None, compare=None,
     ):
         assert months == 12
         assert interval == "monthly"
@@ -568,7 +577,7 @@ async def test_income_expenses_api_forwards_days_window(client, auth_headers, mo
     async def fake_report(
         session, workspace_id, user_id, months, interval, currency,
         account_ids=None, period=None, days=None, financial_year_start_month=1,
-        start_date=None, end_date=None,
+        start_date=None, end_date=None, compare=None,
     ):
         seen["days"] = days
         return ReportResponse(
@@ -615,7 +624,7 @@ async def test_income_expenses_api_forwards_custom_range(client, auth_headers, m
     async def fake_report(
         session, workspace_id, user_id, months, interval, currency,
         account_ids=None, period=None, days=None, financial_year_start_month=1,
-        start_date=None, end_date=None,
+        start_date=None, end_date=None, compare=None,
     ):
         seen["start"] = start_date
         seen["end"] = end_date
@@ -2810,6 +2819,70 @@ def test_add_years_clamps_leap_day():
     # Target year is also a leap year, so Feb 29 survives untouched.
     assert _add_years(date(2020, 2, 29), 4) == date(2024, 2, 29)
     assert _add_years(date(2016, 9, 12), 10) == date(2026, 9, 12)
+
+
+def test_comparison_window_previous_month_aligned():
+    """A whole-month window steps back by whole months."""
+    assert _comparison_window(date(2025, 1, 1), date(2025, 12, 31), "previous") == (
+        date(2024, 1, 1), date(2024, 12, 31),
+    )
+    assert _comparison_window(date(2025, 8, 1), date(2025, 8, 31), "previous") == (
+        date(2025, 7, 1), date(2025, 7, 31),
+    )
+
+
+def test_comparison_window_previous_keeps_day_length():
+    """A partial window compares with the same number of days before it."""
+    assert _comparison_window(date(2025, 9, 1), date(2025, 9, 12), "previous") == (
+        date(2025, 8, 20), date(2025, 8, 31),
+    )
+
+
+def test_comparison_window_year_ago_clamps_leap_day():
+    assert _comparison_window(date(2024, 2, 29), date(2024, 2, 29), "year_ago") == (
+        date(2023, 2, 28), date(2023, 2, 28),
+    )
+
+
+def test_comparison_window_unknown_mode_raises():
+    with pytest.raises(ValueError):
+        _comparison_window(date(2025, 1, 1), date(2025, 1, 31), "last_week")
+
+
+@pytest.mark.asyncio
+async def test_income_expenses_api_forwards_compare(client, auth_headers, monkeypatch):
+    """The compare query param reaches the service; absent means None."""
+    empty_report = ReportResponse(
+        summary=ReportSummary(
+            primary_value=0, change_amount=0, change_percent=None, breakdowns=[],
+        ),
+        trend=[],
+        meta=ReportMeta(
+            type="income_expenses", series_keys=["income", "expenses"],
+            currency="USD", interval="monthly",
+        ),
+    )
+    mock = AsyncMock(return_value=empty_report)
+    monkeypatch.setattr(report_service, "get_income_expenses_report", mock)
+
+    resp = await client.get(
+        "/api/reports/income-expenses?compare=previous", headers=auth_headers
+    )
+    assert resp.status_code == 200
+    assert mock.call_args.kwargs["compare"] == "previous"
+
+    resp = await client.get("/api/reports/income-expenses", headers=auth_headers)
+    assert resp.status_code == 200
+    assert mock.call_args.kwargs["compare"] is None
+
+
+def test_composition_item_group_fields_default_to_none():
+    item = ReportCompositionItem(
+        key="k", label="l", value=1, color="#000", group="expenses",
+    )
+    assert item.group_id is None
+    assert item.group_name is None
+    assert item.group_color is None
 
 
 @pytest.mark.parametrize('endpoint,service_name', [

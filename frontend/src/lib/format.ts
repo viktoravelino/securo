@@ -175,6 +175,16 @@ function currencyFormatter(currency: string, locale: string): Intl.NumberFormat 
   }
 }
 
+/** Compact currency, such as "$1.2K". */
+export function formatCompact(value: number, currency = 'USD', locale = 'en-US') {
+  return new Intl.NumberFormat(locale, {
+    style: 'currency',
+    currency,
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(value)
+}
+
 /**
  * Format a numeric value as currency using Intl.NumberFormat.
  *

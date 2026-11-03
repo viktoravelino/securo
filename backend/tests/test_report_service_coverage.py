@@ -24,9 +24,11 @@ from app.models.asset import Asset
 from app.models.asset_value import AssetValue
 from app.models.bank_connection import BankConnection
 from app.models.category import Category
+from app.models.category_group import CategoryGroup
 from app.models.recurring_transaction import RecurringTransaction
 from app.models.transaction import Transaction
 from app.services.report_service import (
+    _add_years,
     _get_baseline_projection,
     _net_worth_at,
     get_cash_flow_report,
@@ -127,10 +129,11 @@ async def _add_txn(
 
 async def _make_category(
     session: AsyncSession, user_id: uuid.UUID, name: str, color: str = "#123456",
+    group_id: uuid.UUID | None = None,
 ) -> Category:
     cat = Category(
         id=uuid.uuid4(), user_id=user_id, name=name, icon="tag",
-        color=color, is_system=False,
+        color=color, is_system=False, group_id=group_id,
     )
     session.add(cat)
     await session.commit()
@@ -270,6 +273,108 @@ async def test_income_expenses_yearly_interval(session, test_user, test_workspac
     assert report.meta.interval == "yearly"
     bd = {b.key: b.value for b in report.summary.breakdowns}
     assert bd["income"] == pytest.approx(2000.0)
+
+
+async def test_income_expenses_compare_previous(session, test_user, test_workspace):
+    """compare=previous returns the window that ends the day before start."""
+    cat = await _make_category(session, test_user.id, "Compare Cat")
+    acct = await _make_account(session, test_user.id, "IE Compare")
+    today = date.today()
+    first = today.replace(day=1)
+    before = first - timedelta(days=1)
+    await _add_txn(session, test_user.id, acct.id, 500, "debit", first, category_id=cat.id)
+    await _add_txn(session, test_user.id, acct.id, 200, "debit", before, category_id=cat.id)
+    await _add_txn(session, test_user.id, acct.id, 1000, "credit", before)
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=1, interval="monthly",
+        start_date=first, end_date=today, compare="previous",
+    )
+    length = (today - first).days + 1
+    assert report.comparison is not None
+    assert report.comparison.end_date == before.isoformat()
+    assert report.comparison.start_date == (before - timedelta(days=length - 1)).isoformat()
+    bd = {b.key: b.value for b in report.summary.breakdowns}
+    assert bd["expenses"] == pytest.approx(500.0)
+    comp_bd = {b.key: b.value for b in report.comparison.summary.breakdowns}
+    assert comp_bd["expenses"] == pytest.approx(200.0)
+    assert comp_bd["income"] == pytest.approx(1000.0)
+    assert "Compare Cat" in {c.label for c in report.comparison.composition}
+
+
+async def test_income_expenses_compare_year_ago(session, test_user, test_workspace):
+    """compare=year_ago shifts both bounds back one calendar year."""
+    acct = await _make_account(session, test_user.id, "IE Year Ago")
+    today = date.today()
+    first = today.replace(day=1)
+    year_ago = _add_years(today, -1)
+    await _add_txn(session, test_user.id, acct.id, 300, "debit", year_ago)
+    await _add_txn(session, test_user.id, acct.id, 100, "debit", today)
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=1, interval="monthly",
+        start_date=first, end_date=today, compare="year_ago",
+    )
+    assert report.comparison is not None
+    assert report.comparison.start_date == _add_years(first, -1).isoformat()
+    assert report.comparison.end_date == year_ago.isoformat()
+    comp_bd = {b.key: b.value for b in report.comparison.summary.breakdowns}
+    assert comp_bd["expenses"] == pytest.approx(300.0)
+    bd = {b.key: b.value for b in report.summary.breakdowns}
+    assert bd["expenses"] == pytest.approx(100.0)
+
+
+async def test_income_expenses_no_compare_has_none_comparison(
+    session, test_user, test_workspace
+):
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=1, interval="monthly"
+    )
+    assert report.comparison is None
+
+
+async def test_income_expenses_composition_carries_category_group(
+    session, test_user, test_workspace
+):
+    """Composition items carry the category group; others have None."""
+    group = CategoryGroup(
+        id=uuid.uuid4(), user_id=test_user.id, name="Essentials", color="#112233",
+    )
+    session.add(group)
+    await session.commit()
+    grouped = await _make_category(
+        session, test_user.id, "Grouped", group_id=group.id,
+    )
+    projected = await _make_category(
+        session, test_user.id, "Projected", group_id=group.id,
+    )
+    plain = await _make_category(session, test_user.id, "Plain")
+    acct = await _make_account(session, test_user.id, "IE Group")
+    today = date.today()
+    await _add_txn(session, test_user.id, acct.id, 100, "debit", today, category_id=grouped.id)
+    await _add_txn(session, test_user.id, acct.id, 50, "debit", today, category_id=plain.id)
+    await _add_txn(session, test_user.id, acct.id, 25, "debit", today)
+    # Only a recurring rule for this category, so it takes the cat_cache path.
+    await _make_recurring(
+        session, test_user.id, acct.id, 80, "debit",
+        frequency="monthly", next_occurrence=today.replace(day=1),
+        category_id=projected.id,
+    )
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=2, interval="monthly"
+    )
+
+    def groups_by_label(items):
+        return {c.label: (c.group_id, c.group_name, c.group_color) for c in items}
+
+    expected = (str(group.id), "Essentials", "#112233")
+    for items in (report.composition, report.trend[-1].composition):
+        found = groups_by_label(items)
+        assert found["Grouped"] == expected
+        assert found["Plain"] == (None, None, None)
+        assert found["Uncategorized"] == (None, None, None)
+    assert groups_by_label(report.composition)["Projected"] == expected
 
 
 async def test_income_expenses_excludes_opening_but_keeps_closed_history(

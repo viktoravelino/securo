@@ -119,6 +119,11 @@ async def test_income_expenses_has_category_trend(client, auth_headers, test_tra
     assert "category_trend" in data
     assert isinstance(data["category_trend"], list)
 
+    for item in data["composition"]:
+        assert "group_id" in item
+        assert "group_name" in item
+        assert "group_color" in item
+
     # Each item should have the expected shape
     for item in data["category_trend"]:
         assert "key" in item
@@ -173,6 +178,35 @@ async def test_income_expenses_excludes_transfers(
     totals = {b["key"]: b["value"] for b in response.json()["summary"]["breakdowns"]}
     assert totals["income"] == pytest.approx(8150)
     assert totals["expenses"] == pytest.approx(110.40)
+
+
+async def test_income_expenses_compare_previous_api(client, auth_headers, session, test_transactions):
+    today = date.today()
+    first = today.replace(day=1)
+    before = first - timedelta(days=1)
+    test_transactions[0].date = before
+    test_transactions[0].effective_date = before
+    await session.commit()
+    params = {"start_date": first.isoformat(), "end_date": today.isoformat()}
+
+    response = await client.get(
+        "/api/reports/income-expenses",
+        params={**params, "compare": "previous"},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    comparison = response.json()["comparison"]
+    length = (today - first).days + 1
+    assert comparison["end_date"] == before.isoformat()
+    assert comparison["start_date"] == (before - timedelta(days=length - 1)).isoformat()
+    totals = {b["key"]: b["value"] for b in comparison["summary"]["breakdowns"]}
+    assert totals["expenses"] == pytest.approx(25.50)
+
+    response = await client.get(
+        "/api/reports/income-expenses", params=params, headers=auth_headers
+    )
+    assert response.status_code == 200
+    assert response.json()["comparison"] is None
 
 
 async def test_monthly_trend_numeric_fields(client, auth_headers, session, test_transactions):
