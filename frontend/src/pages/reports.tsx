@@ -39,10 +39,10 @@ import { buildComparisonRows, deltaColorClass, deltaPercent } from '@/lib/report
 import { CategoryStackChart } from '@/components/reports/CategoryStackChart'
 import { PeriodComparisonTable } from '@/components/reports/PeriodComparisonTable'
 import { IncomeStatementTable } from '@/components/reports/IncomeStatementTable'
-import { buildIncomeStatement, formatBucketLabel, type IncomeStatement } from '@/lib/income-statement'
+import { buildIncomeStatement, buildStatementCsv, formatBucketLabel } from '@/lib/income-statement'
 import { localDateString, todayInTimezone } from '@/lib/date-utils'
 import { monthLabel } from '@/lib/month-utils'
-import { periodWindow, windowMonths, type PeriodPreset } from '@/lib/report-period'
+import { currentWindow, periodWindow, windowMonths, type PeriodPreset } from '@/lib/report-period'
 import { useEffectiveTimezone } from '@/hooks/use-timezone'
 import { WorkspaceContext } from '@/contexts/workspace-context'
 import {
@@ -175,16 +175,8 @@ interface ReportTab {
 }
 
 /** Download the income statement as a UTF-8 CSV (with BOM) of raw numbers. */
-function downloadStatementCsv(statement: IncomeStatement, filename: string) {
-  const quote = (cell: string) => `"${cell.replace(/"/g, '""')}"`
-  const rows = statement.lines.map((line) => [
-    quote(line.label),
-    ...line.values,
-    line.total,
-    line.shareOfIncome ?? '',
-  ].join(','))
-  const csv = '\uFEFF' + rows.join('\r\n')
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+function downloadStatementCsv(csv: string, filename: string) {
+  const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' }))
   const link = document.createElement('a')
   link.href = url
   link.download = filename
@@ -292,7 +284,12 @@ export default function ReportsPage() {
   const [stackMode, setStackMode] = useState<'absolute' | 'percent'>('absolute')
   const [compareMode, setCompareMode] = useState<ReportCompareMode | 'off'>('off')
   const [cashFlowBaseline, setCashFlowBaseline] = useState(false)
-  const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [selectedDate, setSelectedDateState] = useState<string | null>(null)
+  // Pick a bar (or clear it). A group narrowed on another month no longer applies.
+  const setSelectedDate = (date: string | null) => {
+    setSelectedDateState(date)
+    setSelectedGroupKey(null)
+  }
   // Active Collection filter (issue #105): scope all report tabs to its
   // accounts; net worth also includes the collection's wallets' assets.
   const { activeAccountIds, activeWalletIds } = useCollectionFilter()
@@ -354,11 +351,16 @@ export default function ReportsPage() {
         ),
       )
     : selectedRange.months
-  const months = navWindow ? windowMonths(navWindow) : isCustomRange ? customMonths : selectedRange.months
-  const period = navWindow || isCustomRange ? undefined : selectedRange.period
-  const days = navWindow || isCustomRange ? undefined : selectedRange.days
-  const apiStart = navWindow ? navWindow.from : hasCustomRange ? customFrom : undefined
-  const apiEnd = navWindow ? navWindow.to : hasCustomRange ? customTo : undefined
+  // The Income Statement shows actuals only. Explicit dates make the API skip
+  // the current month's projections, so that tab always sends a window.
+  const requestWindow =
+    navWindow ??
+    (isStatement ? currentWindow(periodPreset, todayInTimezone(timeZone)) : null)
+  const months = requestWindow ? windowMonths(requestWindow) : isCustomRange ? customMonths : selectedRange.months
+  const period = requestWindow || isCustomRange ? undefined : selectedRange.period
+  const days = requestWindow || isCustomRange ? undefined : selectedRange.days
+  const apiStart = requestWindow ? requestWindow.from : hasCustomRange ? customFrom : undefined
+  const apiEnd = requestWindow ? requestWindow.to : hasCustomRange ? customTo : undefined
   // Label for the period being viewed: the month name for the month presets,
   // the covered span when the window has been stepped back or is custom, and
   // the preset's own name while the window still ends today.
@@ -752,7 +754,7 @@ export default function ReportsPage() {
   const groupDonutActive =
     activeTab === 'income_expenses' && (compositionView === 'byIncome' || compositionView === 'byExpenses')
   const groupSlices: GroupSlice[] = groupDonutActive
-    ? groupComposition(composition, compositionView === 'byIncome' ? 'income' : 'expenses', {
+    ? groupComposition(activeComposition, compositionView === 'byIncome' ? 'income' : 'expenses', {
         noGroup: t('reports.noGroup'),
         uncategorized: t('reports.uncategorized'),
       })
@@ -1028,7 +1030,11 @@ export default function ReportsPage() {
               disabled={isLoading || trend.length === 0}
               onClick={() =>
                 downloadStatementCsv(
-                  statement,
+                  buildStatementCsv(statement, {
+                    period: (date) => formatBucketLabel(date, interval, dateLocale),
+                    total: t('reports.statementTotal'),
+                    share: t('reports.statementShare'),
+                  }),
                   `income-statement-${activeWindow?.from ?? trend[0].date}-${activeWindow?.to ?? trend[trend.length - 1].date}.csv`,
                 )
               }
@@ -1923,7 +1929,7 @@ export default function ReportsPage() {
                   onClick={(payload) => {
                     const date = payload?.activeLabel as string | undefined
                     if (!date) return
-                    setSelectedDate((prev) => (prev === date ? null : date))
+                    setSelectedDate(selectedDate === date ? null : date)
                   }}
                   style={{ cursor: 'pointer' }}
                 >
@@ -2092,6 +2098,8 @@ export default function ReportsPage() {
                 mode={stackMode}
                 currency={userCurrency}
                 locale={locale}
+                interval={interval}
+                dateLocale={dateLocale}
               />
             )}
           </div>
@@ -2101,7 +2109,7 @@ export default function ReportsPage() {
       {/* Period comparison */}
       {meta?.type === 'income_expenses' && comparison && (() => {
         const side = sparklineView === 'byIncome' ? 'income' : 'expenses'
-        const rows = buildComparisonRows(composition, comparison.composition, side)
+        const rows = buildComparisonRows(comparison.current_composition, comparison.composition, side)
         return (
           <div className="bg-card rounded-xl border border-border shadow-sm mt-5">
             <div className="flex flex-wrap items-center justify-between gap-2 px-5 pt-4 pb-2">

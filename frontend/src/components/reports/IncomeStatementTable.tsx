@@ -71,19 +71,29 @@ export function IncomeStatementTable({ statement, currency, locale, periodLabel 
           return (
             <TableRow
               key={line.key}
-              className={`${ROW_STYLE[line.kind]} ${collapsible ? 'cursor-pointer' : ''}`}
-              onClick={collapsible ? () => toggle(line.key) : undefined}
+              className={ROW_STYLE[line.kind]}
             >
               <TableCell
                 className={`sticky left-0 z-10 whitespace-nowrap ${line.kind === 'result' ? 'bg-muted' : 'bg-card'} ${INDENT[line.depth]}`}
               >
-                <span className="flex items-center gap-1.5">
-                  {collapsible && <Chevron className="h-3.5 w-3.5 shrink-0" />}
-                  {line.kind === 'category' && line.color && (
-                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: line.color }} />
-                  )}
-                  {line.label}
-                </span>
+                {collapsible ? (
+                  <button
+                    type="button"
+                    aria-expanded={open}
+                    onClick={() => toggle(line.key)}
+                    className="flex cursor-pointer items-center gap-1.5 rounded-sm outline-none focus-visible:ring-[2px] focus-visible:ring-ring/30"
+                  >
+                    <Chevron className="h-3.5 w-3.5 shrink-0" />
+                    {line.label}
+                  </button>
+                ) : (
+                  <span className="flex items-center gap-1.5">
+                    {line.kind === 'category' && line.color && (
+                      <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: line.color }} />
+                    )}
+                    {line.label}
+                  </span>
+                )}
               </TableCell>
               {line.values.map((value, i) => (
                 <TableCell key={statement.periods[i]} className="text-right tabular-nums">{cell(line, value)}</TableCell>

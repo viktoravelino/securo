@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildIncomeStatement, type StatementLine } from '@/lib/income-statement'
+import { buildIncomeStatement, buildStatementCsv, formatBucketLabel, type StatementLine } from '@/lib/income-statement'
 import type { ReportCompositionItem, ReportDataPoint } from '@/types'
 
 const labels = {
@@ -121,5 +121,30 @@ describe('buildIncomeStatement', () => {
     const { lines } = buildIncomeStatement([point('2026-01', [item('rent', 'expenses', 50, 'housing')])], labels)
     expect(find(lines, 'savingsRate')).toMatchObject({ values: [0], total: 0 })
     expect(find(lines, 'expenses')?.shareOfIncome).toBeNull()
+  })
+})
+
+describe('formatBucketLabel', () => {
+  it('shows the Monday of an ISO week', () => {
+    expect(formatBucketLabel('2026-W44', 'weekly', 'en-US')).toBe('Oct 26, 2026')
+    // Week 1 of 2026 starts in the previous year.
+    expect(formatBucketLabel('2026-W01', 'weekly', 'en-US')).toBe('Dec 29, 2025')
+  })
+})
+
+describe('buildStatementCsv', () => {
+  it('adds a header row and neutralizes formulas in labels only', () => {
+    const trend = [
+      point('2026-01', [item('=SUM(A1)', 'income', 100, 'work'), item('rent', 'expenses', -5, 'home')]),
+    ]
+    const csv = buildStatementCsv(buildIncomeStatement(trend, labels), {
+      period: (date) => `P ${date}`,
+      total: 'Total',
+      share: 'Share',
+    })
+    const rows = csv.split('\r\n')
+    expect(rows[0]).toBe(',"P 2026-01","Total","Share"')
+    expect(csv).toContain(`"'=SUM(A1)",100,100,1`)
+    expect(csv).toContain(',-5,-5,')
   })
 })

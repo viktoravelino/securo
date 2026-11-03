@@ -28,7 +28,6 @@ from app.models.category_group import CategoryGroup
 from app.models.recurring_transaction import RecurringTransaction
 from app.models.transaction import Transaction
 from app.services.report_service import (
-    _add_years,
     _get_baseline_projection,
     _net_worth_at,
     get_cash_flow_report,
@@ -276,24 +275,22 @@ async def test_income_expenses_yearly_interval(session, test_user, test_workspac
 
 
 async def test_income_expenses_compare_previous(session, test_user, test_workspace):
-    """compare=previous returns the window that ends the day before start."""
+    """A window that starts on the 1st compares with the same days of the month before."""
     cat = await _make_category(session, test_user.id, "Compare Cat")
     acct = await _make_account(session, test_user.id, "IE Compare")
-    today = date.today()
-    first = today.replace(day=1)
-    before = first - timedelta(days=1)
-    await _add_txn(session, test_user.id, acct.id, 500, "debit", first, category_id=cat.id)
-    await _add_txn(session, test_user.id, acct.id, 200, "debit", before, category_id=cat.id)
-    await _add_txn(session, test_user.id, acct.id, 1000, "credit", before)
+    # Feb 10 sits inside Feb 1-15 (month step) but outside Feb 14-28 (day length).
+    await _add_txn(session, test_user.id, acct.id, 500, "debit", date(2026, 3, 5), category_id=cat.id)
+    await _add_txn(session, test_user.id, acct.id, 200, "debit", date(2026, 2, 10), category_id=cat.id)
+    await _add_txn(session, test_user.id, acct.id, 1000, "credit", date(2026, 2, 10))
+    await _add_txn(session, test_user.id, acct.id, 999, "debit", date(2026, 2, 20), category_id=cat.id)
 
     report = await get_income_expenses_report(
         session, test_workspace.id, test_user.id, months=1, interval="monthly",
-        start_date=first, end_date=today, compare="previous",
+        start_date=date(2026, 3, 1), end_date=date(2026, 3, 15), compare="previous",
     )
-    length = (today - first).days + 1
     assert report.comparison is not None
-    assert report.comparison.end_date == before.isoformat()
-    assert report.comparison.start_date == (before - timedelta(days=length - 1)).isoformat()
+    assert report.comparison.start_date == "2026-02-01"
+    assert report.comparison.end_date == "2026-02-15"
     bd = {b.key: b.value for b in report.summary.breakdowns}
     assert bd["expenses"] == pytest.approx(500.0)
     comp_bd = {b.key: b.value for b in report.comparison.summary.breakdowns}
@@ -302,22 +299,76 @@ async def test_income_expenses_compare_previous(session, test_user, test_workspa
     assert "Compare Cat" in {c.label for c in report.comparison.composition}
 
 
-async def test_income_expenses_compare_year_ago(session, test_user, test_workspace):
-    """compare=year_ago shifts both bounds back one calendar year."""
-    acct = await _make_account(session, test_user.id, "IE Year Ago")
-    today = date.today()
-    first = today.replace(day=1)
-    year_ago = _add_years(today, -1)
-    await _add_txn(session, test_user.id, acct.id, 300, "debit", year_ago)
-    await _add_txn(session, test_user.id, acct.id, 100, "debit", today)
+async def test_income_expenses_compare_current_composition_explicit_dates(
+    session, test_user, test_workspace
+):
+    """Explicit dates give actuals only, so current_composition equals composition."""
+    cat = await _make_category(session, test_user.id, "Same Cat")
+    acct = await _make_account(session, test_user.id, "IE Same")
+    await _add_txn(session, test_user.id, acct.id, 70, "debit", date(2026, 3, 5), category_id=cat.id)
 
     report = await get_income_expenses_report(
         session, test_workspace.id, test_user.id, months=1, interval="monthly",
-        start_date=first, end_date=today, compare="year_ago",
+        start_date=date(2026, 3, 1), end_date=date(2026, 3, 31), compare="previous",
     )
     assert report.comparison is not None
-    assert report.comparison.start_date == _add_years(first, -1).isoformat()
-    assert report.comparison.end_date == year_ago.isoformat()
+    assert report.composition
+    assert report.comparison.current_composition == report.composition
+
+
+async def test_income_expenses_compare_current_composition_excludes_forecast(
+    session, test_user, test_workspace, monkeypatch
+):
+    """With a preset, composition adds projections but current_composition is actuals only."""
+    import app.services.report_service as rs
+
+    calls: list[tuple[date | None, date | None]] = []
+    real = rs.get_income_expenses_report
+
+    async def spy(*args, **kwargs):
+        calls.append((kwargs.get("start_date"), kwargs.get("end_date")))
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(rs, "get_income_expenses_report", spy)
+
+    actual_cat = await _make_category(session, test_user.id, "Actual Cat")
+    rent = await _make_category(session, test_user.id, "Projected Rent")
+    acct = await _make_account(session, test_user.id, "IE Forecast")
+    today = date.today()
+    await _add_txn(session, test_user.id, acct.id, 40, "debit", today, category_id=actual_cat.id)
+    await _make_recurring(
+        session, test_user.id, acct.id, 800, "debit",
+        frequency="monthly", next_occurrence=today.replace(day=1),
+        category_id=rent.id,
+    )
+
+    report = await real(
+        session, test_workspace.id, test_user.id, months=1, interval="monthly",
+        compare="previous",
+    )
+    assert report.comparison is not None
+    assert "Projected Rent" in {c.label for c in report.composition}
+    current_labels = {c.label for c in report.comparison.current_composition}
+    assert "Projected Rent" not in current_labels
+    assert "Actual Cat" in current_labels
+    # The comparison window and the current window are both nested calls with explicit dates.
+    assert len(calls) == 2
+    assert all(start is not None and end is not None for start, end in calls)
+
+
+async def test_income_expenses_compare_year_ago(session, test_user, test_workspace):
+    """compare=year_ago shifts both bounds back one calendar year."""
+    acct = await _make_account(session, test_user.id, "IE Year Ago")
+    await _add_txn(session, test_user.id, acct.id, 300, "debit", date(2025, 3, 10))
+    await _add_txn(session, test_user.id, acct.id, 100, "debit", date(2026, 3, 10))
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=1, interval="monthly",
+        start_date=date(2026, 3, 1), end_date=date(2026, 3, 15), compare="year_ago",
+    )
+    assert report.comparison is not None
+    assert report.comparison.start_date == "2025-03-01"
+    assert report.comparison.end_date == "2025-03-15"
     comp_bd = {b.key: b.value for b in report.comparison.summary.breakdowns}
     assert comp_bd["expenses"] == pytest.approx(300.0)
     bd = {b.key: b.value for b in report.summary.breakdowns}
@@ -1313,3 +1364,24 @@ async def test_category_trend_pending_refund_never_makes_negative_bar(
     assert all(p.value >= 0 for p in trend.series)
     assert trend.series[-1].value == 0.0
     assert trend.total == pytest.approx(600.0)
+
+
+async def test_income_expenses_trend_composition_includes_investments(
+    session, test_user, test_workspace
+):
+    """Per-period composition carries investments; category_trend does not."""
+    invest = await _make_category(session, test_user.id, "Invest Cat")
+    invest.treat_as_transfer = True
+    await session.commit()
+    acct = await _make_account(session, test_user.id, "IE Invest")
+    today = date.today()
+    await _add_txn(session, test_user.id, acct.id, 350, "debit", today, category_id=invest.id)
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=2, interval="monthly"
+    )
+    point = next(p for p in report.trend if p.date == today.strftime("%Y-%m"))
+    items = [c for c in point.composition if c.group == "investments"]
+    assert [(c.key, c.value) for c in items] == [(str(invest.id), pytest.approx(350.0))]
+    assert str(invest.id) in {c.key for c in report.composition if c.group == "investments"}
+    assert str(invest.id) not in {c.key for c in report.category_trend}

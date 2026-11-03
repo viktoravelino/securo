@@ -1,5 +1,6 @@
 import type { ReportCompositionItem, ReportDataPoint } from '@/types'
 import { formatDate } from '@/lib/date-range-format'
+import { addDaysIso } from '@/lib/report-period'
 
 export interface StatementLine {
   key: string
@@ -188,12 +189,49 @@ export function buildIncomeStatement(trend: ReportDataPoint[], labels: Statement
   return { periods, lines }
 }
 
-/** Short column label for a trend bucket: "Aug 2026" for months, "2026" for years. */
+/** Monday of an ISO week (`YYYY-Www`) as `YYYY-MM-DD`. Week 1 is the week that holds Jan 4. */
+function isoWeekStart(bucket: string): string | null {
+  const match = /^(\d{4})-W(\d{2})$/.exec(bucket)
+  if (!match) return null
+  const jan4 = `${match[1]}-01-04`
+  const weekday = (new Date(`${jan4}T00:00:00`).getDay() + 6) % 7 // Monday is 0
+  return addDaysIso(jan4, -weekday + (Number(match[2]) - 1) * 7)
+}
+
+/** Short column label for a trend bucket: "Aug 2026" for months, the start date for days and weeks, "2026" for years. */
 export function formatBucketLabel(date: string, interval: string, dateLocale: string): string {
   if (interval === 'monthly') {
     const [y, m] = date.split('-').map(Number)
     return new Date(y, m - 1, 1).toLocaleDateString(dateLocale, { month: 'short', year: 'numeric' })
   }
   if (interval === 'daily') return formatDate(date, dateLocale)
+  if (interval === 'weekly') {
+    const start = isoWeekStart(date)
+    return start ? formatDate(start, dateLocale) : date
+  }
   return date
+}
+
+/** Stop a spreadsheet from running a label as a formula. */
+const FORMULA_START = /^[=+\-@\t\r]/
+const textCell = (label: string) => {
+  const safe = FORMULA_START.test(label) ? `'${label}` : label
+  return `"${safe.replace(/"/g, '""')}"`
+}
+
+/**
+ * Build the statement CSV: a header row, then one row per line.
+ * Labels are quoted and neutralized against formulas. Numbers stay raw.
+ */
+export function buildStatementCsv(
+  statement: IncomeStatement,
+  headers: { period: (date: string) => string; total: string; share: string },
+): string {
+  const header = ['', ...statement.periods.map(headers.period), headers.total, headers.share].map((cell) =>
+    cell === '' ? '' : textCell(cell),
+  )
+  const rows = statement.lines.map((line) =>
+    [textCell(line.label), ...line.values, line.total, line.shareOfIncome ?? ''].join(','),
+  )
+  return [header.join(','), ...rows].join('\r\n')
 }

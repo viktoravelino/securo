@@ -2832,9 +2832,31 @@ def test_comparison_window_previous_month_aligned():
 
 
 def test_comparison_window_previous_keeps_day_length():
-    """A partial window compares with the same number of days before it."""
-    assert _comparison_window(date(2025, 9, 1), date(2025, 9, 12), "previous") == (
-        date(2025, 8, 20), date(2025, 8, 31),
+    """A window that does not start on the 1st keeps its day length."""
+    assert _comparison_window(date(2026, 3, 31), date(2026, 4, 29), "previous") == (
+        date(2026, 3, 1), date(2026, 3, 30),
+    )
+
+
+def test_comparison_window_previous_steps_whole_months_from_first():
+    """Any window that starts on the 1st steps back by whole months."""
+    assert _comparison_window(date(2026, 11, 1), date(2026, 11, 15), "previous") == (
+        date(2026, 10, 1), date(2026, 10, 15),
+    )
+    assert _comparison_window(date(2026, 1, 1), date(2026, 11, 2), "previous") == (
+        date(2025, 2, 1), date(2025, 12, 2),
+    )
+    assert _comparison_window(date(2026, 10, 1), date(2026, 10, 31), "previous") == (
+        date(2026, 9, 1), date(2026, 9, 30),
+    )
+    assert _comparison_window(date(2026, 3, 1), date(2026, 3, 31), "previous") == (
+        date(2026, 2, 1), date(2026, 2, 28),
+    )
+
+
+def test_comparison_window_year_ago_month_aligned_keeps_leap_day():
+    assert _comparison_window(date(2025, 2, 1), date(2025, 2, 28), "year_ago") == (
+        date(2024, 2, 1), date(2024, 2, 29),
     )
 
 

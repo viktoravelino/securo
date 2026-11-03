@@ -426,3 +426,32 @@ async def test_hiding_can_deactivate_the_rules_that_assign_the_category(
         item for item in rules.json() if item["id"] == create_other.json()["id"]
     )
     assert untouched["is_active"] is True
+
+
+async def test_category_with_foreign_group_returns_400(
+    client: AsyncClient, auth_headers, session: AsyncSession, test_user, test_categories
+):
+    from app.models.category_group import CategoryGroup
+    from app.models.workspace import Workspace
+
+    other = Workspace(name="Other", kind="personal", created_by_user_id=test_user.id)
+    session.add(other)
+    await session.commit()
+    foreign = CategoryGroup(
+        id=uuid.uuid4(), user_id=test_user.id, workspace_id=other.id, name="Foreign",
+    )
+    session.add(foreign)
+    await session.commit()
+
+    created = await client.post(
+        "/api/categories",
+        json={"name": "X", "icon": "tag", "color": "#111111", "group_id": str(foreign.id)},
+        headers=auth_headers,
+    )
+    assert created.status_code == 400
+    updated = await client.patch(
+        f"/api/categories/{test_categories[0].id}",
+        json={"group_id": str(foreign.id)},
+        headers=auth_headers,
+    )
+    assert updated.status_code == 400

@@ -72,6 +72,8 @@ class ReportComparison(BaseModel):
     end_date: str
     summary: ReportSummary
     composition: list[ReportCompositionItem] = []
+    # Actuals-only composition of the current window, comparable to ``composition``.
+    current_composition: list[ReportCompositionItem] = []
 
 
 class ReportResponse(BaseModel):

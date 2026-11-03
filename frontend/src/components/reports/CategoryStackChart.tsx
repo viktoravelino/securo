@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next'
 import { Bar, BarChart, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { buildCategoryStack } from '@/lib/category-stack'
+import { formatBucketLabel } from '@/lib/income-statement'
 import { formatCompact, formatCurrency } from '@/lib/format'
 import type { CategoryTrendItem } from '@/types'
 
@@ -10,6 +11,9 @@ interface CategoryStackChartProps {
   mode: 'absolute' | 'percent'
   currency: string
   locale: string
+  /** Bucket size of the dates in `items`, and the locale for their axis labels. */
+  interval: string
+  dateLocale: string
 }
 
 const tooltipStyle = {
@@ -22,7 +26,7 @@ const tooltipStyle = {
 }
 
 /** Stacked bars of category amounts per bucket, as amounts or as shares of the bucket total. */
-export function CategoryStackChart({ items, mode, currency, locale }: CategoryStackChartProps) {
+export function CategoryStackChart({ items, mode, currency, locale, interval, dateLocale }: CategoryStackChartProps) {
   const { t } = useTranslation()
   const { privacyMode, MASK } = usePrivacyMode()
   const { series, rows } = buildCategoryStack(items)
@@ -48,6 +52,7 @@ export function CategoryStackChart({ items, mode, currency, locale }: CategorySt
           axisLine={false}
           tickLine={false}
           interval="preserveStartEnd"
+          tickFormatter={(date: string) => formatBucketLabel(date, interval, dateLocale)}
         />
         <YAxis
           tickFormatter={(v: number) => {

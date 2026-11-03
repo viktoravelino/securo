@@ -27,6 +27,10 @@ class CategoryVisibilityError(ValueError):
     """Raised when visibility is changed for a user-created category."""
 
 
+class CategoryGroupNotFoundError(ValueError):
+    """Raised when a category names a group that is not in the workspace."""
+
+
 class CategoryInUseError(ValueError):
     """Raised when a category with references is deleted without a destination."""
 
@@ -146,12 +150,27 @@ async def get_category(
     return result.scalar_one_or_none()
 
 
+async def _ensure_group_in_workspace(
+    session: AsyncSession, group_id: uuid.UUID, workspace_id: uuid.UUID
+) -> None:
+    """Raise CategoryGroupNotFoundError when the group is not in this workspace."""
+    found = await session.execute(
+        select(CategoryGroup.id).where(
+            CategoryGroup.id == group_id, CategoryGroup.workspace_id == workspace_id
+        )
+    )
+    if found.scalar_one_or_none() is None:
+        raise CategoryGroupNotFoundError("Category group not found.")
+
+
 async def create_category(
     session: AsyncSession,
     workspace_id: uuid.UUID,
     user_id: uuid.UUID,
     data: CategoryCreate,
 ) -> Category:
+    if data.group_id is not None:
+        await _ensure_group_in_workspace(session, data.group_id, workspace_id)
     category = Category(user_id=user_id, workspace_id=workspace_id, **data.model_dump())
     session.add(category)
     await session.commit()
@@ -224,6 +243,9 @@ async def update_category(
     changes = data.model_dump(exclude_unset=True)
     if changes.get("is_hidden") is True and not category.is_system:
         raise CategoryVisibilityError("Only system categories can be hidden")
+
+    if changes.get("group_id") is not None:
+        await _ensure_group_in_workspace(session, changes["group_id"], workspace_id)
 
     for key, value in changes.items():
         setattr(category, key, value)

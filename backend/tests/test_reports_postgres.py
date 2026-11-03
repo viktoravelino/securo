@@ -181,13 +181,14 @@ async def test_income_expenses_excludes_transfers(
 
 
 async def test_income_expenses_compare_previous_api(client, auth_headers, session, test_transactions):
-    today = date.today()
-    first = today.replace(day=1)
-    before = first - timedelta(days=1)
-    test_transactions[0].date = before
-    test_transactions[0].effective_date = before
+    # Fixed dates keep the test independent of today. Feb 10 is inside Feb 1-15
+    # (month step); Feb 20 is outside it.
+    test_transactions[0].date = date(2026, 2, 10)
+    test_transactions[0].effective_date = date(2026, 2, 10)
+    test_transactions[1].date = date(2026, 2, 20)
+    test_transactions[1].effective_date = date(2026, 2, 20)
     await session.commit()
-    params = {"start_date": first.isoformat(), "end_date": today.isoformat()}
+    params = {"start_date": "2026-03-01", "end_date": "2026-03-15"}
 
     response = await client.get(
         "/api/reports/income-expenses",
@@ -196,9 +197,8 @@ async def test_income_expenses_compare_previous_api(client, auth_headers, sessio
     )
     assert response.status_code == 200
     comparison = response.json()["comparison"]
-    length = (today - first).days + 1
-    assert comparison["end_date"] == before.isoformat()
-    assert comparison["start_date"] == (before - timedelta(days=length - 1)).isoformat()
+    assert comparison["start_date"] == "2026-02-01"
+    assert comparison["end_date"] == "2026-02-15"
     totals = {b["key"]: b["value"] for b in comparison["summary"]["breakdowns"]}
     assert totals["expenses"] == pytest.approx(25.50)
 

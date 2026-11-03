@@ -1102,6 +1102,8 @@ export interface ReportComparison {
   end_date: string
   summary: ReportSummary
   composition: ReportCompositionItem[]
+  /** Current window composition, actuals only (no projections). */
+  current_composition: ReportCompositionItem[]
 }
 
 export interface ReportResponse {

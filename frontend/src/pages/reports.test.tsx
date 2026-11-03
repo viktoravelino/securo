@@ -557,6 +557,7 @@ describe('Reports page, period comparison', () => {
           ],
         },
         composition: [{ key: 'food', label: 'Food', value: 400, color: '#F59E0B', group: 'expenses' }],
+        current_composition: [{ key: 'food', label: 'Food', value: 500, color: '#F59E0B', group: 'expenses' }],
       },
     })
 
@@ -660,10 +661,33 @@ describe('Reports page, income statement tab', () => {
     expect(within(table).getByText('Housing')).toBeInTheDocument()
     expect(within(table).queryByText('Rent')).not.toBeInTheDocument()
 
-    await user.click(within(table).getByText('Housing'))
+    const housing = within(table).getByRole('button', { name: 'Housing' })
+    expect(housing).toHaveAttribute('aria-expanded', 'false')
+    housing.focus()
+    await user.keyboard('{Enter}')
+    expect(housing).toHaveAttribute('aria-expanded', 'true')
     expect(within(table).getByText('Rent')).toBeInTheDocument()
+    await user.click(housing)
+    expect(housing).toHaveAttribute('aria-expanded', 'false')
+    await user.click(housing)
 
     expect(screen.queryByTestId('reports-compare')).not.toBeInTheDocument()
     expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBeUndefined()
+  })
+
+  it('asks for explicit dates, so the statement shows actuals only', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(statementReport())
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
+    // 1Y at offset 0 sends no dates on this tab.
+    expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(5, 7)).toEqual([undefined, undefined])
+
+    await user.click(screen.getByRole('button', { name: t('reports.incomeStatement') }))
+    await waitFor(() => {
+      const [start, end] = api.reports.incomeExpenses.mock.calls.at(-1)?.slice(5, 7) ?? []
+      expect(start).toMatch(/^\d{4}-\d{2}-01$/)
+      expect(end).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    })
   })
 })
