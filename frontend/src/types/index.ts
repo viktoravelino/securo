@@ -1071,6 +1071,9 @@ export interface ReportCompositionItem {
   value: number
   color: string
   group: string
+  group_id?: string | null
+  group_name?: string | null
+  group_color?: string | null
 }
 
 export interface CategoryTrendItem {
@@ -1091,12 +1094,25 @@ export interface Attachment {
   created_at: string
 }
 
+// What the income/expenses report is compared against.
+export type ReportCompareMode = 'previous' | 'year_ago'
+
+export interface ReportComparison {
+  start_date: string
+  end_date: string
+  summary: ReportSummary
+  composition: ReportCompositionItem[]
+  /** Current window composition, actuals only (no projections). */
+  current_composition: ReportCompositionItem[]
+}
+
 export interface ReportResponse {
   summary: ReportSummary
   trend: ReportDataPoint[]
   meta: ReportMeta
   composition: ReportCompositionItem[]
   category_trend: CategoryTrendItem[]
+  comparison?: ReportComparison | null
 }
 
 // --- Invoices -------------------------------------------------------------

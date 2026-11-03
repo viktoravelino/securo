@@ -16,6 +16,7 @@ from app.services.category_defaults import (
     name_variants,
 )
 from app.services.category_service import (
+    CategoryGroupNotFoundError,
     create_category,
     create_default_categories,
     delete_category,
@@ -405,3 +406,34 @@ async def test_delete_system_category(session: AsyncSession, test_user, test_wor
 async def test_delete_category_not_found(session: AsyncSession, test_user, test_workspace):
     assert await delete_category(session, uuid.uuid4(), test_workspace.id) is False
 
+
+
+@pytest.mark.asyncio
+async def test_category_rejects_group_from_other_workspace(
+    session: AsyncSession, test_user, test_workspace
+):
+    """A group id from another workspace is refused on create and update."""
+    from app.models.workspace import Workspace
+
+    other = Workspace(name="Other", kind="personal", created_by_user_id=test_user.id)
+    session.add(other)
+    await session.commit()
+    foreign = CategoryGroup(
+        id=uuid.uuid4(), user_id=test_user.id, workspace_id=other.id, name="Foreign",
+    )
+    session.add(foreign)
+    await session.commit()
+
+    with pytest.raises(CategoryGroupNotFoundError):
+        await create_category(
+            session, test_workspace.id, test_user.id,
+            CategoryCreate(name="X", icon="tag", color="#111111", group_id=foreign.id),
+        )
+    cat = await create_category(
+        session, test_workspace.id, test_user.id,
+        CategoryCreate(name="Own", icon="tag", color="#111111"),
+    )
+    with pytest.raises(CategoryGroupNotFoundError):
+        await update_category(
+            session, cat.id, test_workspace.id, CategoryUpdate(group_id=foreign.id),
+        )

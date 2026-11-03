@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import String, select, desc, func, case, or_
+from sqlalchemy import String, and_, select, desc, func, case, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.app_clock import app_today
@@ -14,6 +14,7 @@ from app.models.asset import ASSET_PRICE_DECIMALS, Asset
 from app.models.asset_value import AssetValue
 from app.models.transaction import Transaction
 from app.models.category import Category
+from app.models.category_group import CategoryGroup
 from app.models.user import User
 from app.services._query_filters import (
     counts_as_pnl,
@@ -28,6 +29,7 @@ from app.services.fx_rate_service import convert
 from app.schemas.report import (
     CategoryTrendItem,
     ReportBreakdown,
+    ReportComparison,
     ReportCompositionItem,
     ReportDataPoint,
     ReportMeta,
@@ -58,6 +60,64 @@ _ASSET_TYPE_COLORS: dict[str, str] = {
     "investment": "#8B5CF6",
     "other": "#6B7280",
 }
+
+
+def _group_fields(group_id, group_name, group_color) -> dict:
+    """Return the category-group keys that composition entries carry."""
+    return {
+        "group_id": str(group_id) if group_id else None,
+        "group_name": group_name,
+        "group_color": group_color,
+    }
+
+
+def _info_group_fields(info: dict) -> dict:
+    """Copy the category-group keys from a cache or map entry."""
+    return {k: info.get(k) for k in ("group_id", "group_name", "group_color")}
+
+
+# Fallback cache entry for uncategorized projections.
+_UNCATEGORIZED_INFO = {
+    "label": "Uncategorized",
+    "color": "#6B7280",
+    **_group_fields(None, None, None),
+}
+
+
+def _comparison_window(start: date, end: date, compare: str) -> tuple[date, date]:
+    """Return the window to compare [start, end] against.
+
+    A window that starts on the 1st steps back by whole months. The span is
+    the number of months from start to end, inclusive.
+    - previous: shifts both bounds back by the span. A window that ends on a
+      month end keeps a month-end bound (Jan-Dec compares with the previous
+      Jan-Dec). Other end days keep their day, clamped to the month length.
+    - year_ago: a month-aligned window (1st to month end) shifts back 12 months
+      and ends on the month end, so Feb 2025 compares with all of Feb 2024.
+    Any other window keeps its exact day length (previous) or shifts back one
+    calendar year (year_ago, Feb 29 clamps).
+    """
+    ends_on_month_end = end.day == calendar.monthrange(end.year, end.month)[1]
+    if compare == "year_ago":
+        if start.day == 1 and ends_on_month_end:
+            return _add_months(start, -12), _month_end(_add_months(end, -12))
+        return _add_years(start, -1), _add_years(end, -1)
+    if compare != "previous":
+        raise ValueError(f"unknown compare mode: {compare}")
+    if start.day == 1:
+        span = (end.year - start.year) * 12 + (end.month - start.month) + 1
+        comp_end = _add_months(end, -span)
+        if ends_on_month_end:
+            comp_end = _month_end(comp_end)
+        return _add_months(start, -span), comp_end
+    comp_end = start - timedelta(days=1)
+    length = (end - start).days + 1
+    return comp_end - timedelta(days=length - 1), comp_end
+
+
+def _month_end(d: date) -> date:
+    """Return the last day of d's month."""
+    return d.replace(day=calendar.monthrange(d.year, d.month)[1])
 
 
 def _report_start_date(
@@ -490,8 +550,13 @@ async def get_income_expenses_report(
     financial_year_start_month: int = 1,
     start_date: date | None = None,
     end_date: date | None = None,
+    compare: str | None = None,
 ) -> ReportResponse:
-    """Build income/expenses; explicit custom windows include actuals only."""
+    """Build income/expenses; explicit custom windows include actuals only.
+
+    ``compare`` (previous or year_ago) adds a ``comparison`` block with the
+    summary and composition of the matching earlier window (actuals only).
+    """
     filtered = account_ids is not None
     acct_filter = [Transaction.account_id.in_(account_ids)] if filtered else []
     real_today = app_today()
@@ -870,11 +935,21 @@ async def get_income_expenses_report(
             Category.id,
             Category.name,
             Category.color,
+            CategoryGroup.id,
+            CategoryGroup.name,
+            CategoryGroup.color,
             Transaction.type,
             func.sum(amount_expr),
         )
         .select_from(Transaction)
         .outerjoin(Category, Transaction.category_id == Category.id)
+        .outerjoin(
+            CategoryGroup,
+            and_(
+                Category.group_id == CategoryGroup.id,
+                CategoryGroup.workspace_id == workspace_id,
+            ),
+        )
         .where(
             Transaction.workspace_id == workspace_id,
             report_date >= start,
@@ -884,14 +959,18 @@ async def get_income_expenses_report(
             counts_as_user_pnl(),
             *acct_filter,
         )
-        .group_by(Category.id, Category.name, Category.color, Transaction.type)
+        .group_by(
+            Category.id, Category.name, Category.color,
+            CategoryGroup.id, CategoryGroup.name, CategoryGroup.color,
+            Transaction.type,
+        )
     )
 
     # Collect composition into a mutable map so projections can be added
     # Key: (cat_key, group) -> {label, color, value}
     comp_map: dict[tuple[str, str], dict] = {}
     for row in cat_result.all():
-        cat_id, cat_name, cat_color, txn_type, total_amount = row
+        cat_id, cat_name, cat_color, grp_id, grp_name, grp_color, txn_type, total_amount = row
         # Signed net per category; <= 0 contributes nothing.
         amount = float(total_amount or 0)
         if amount <= 0:
@@ -902,6 +981,7 @@ async def get_income_expenses_report(
             "label": cat_name if cat_name else "Uncategorized",
             "color": cat_color if cat_color else "#6B7280",
             "value": amount,
+            **_group_fields(grp_id, grp_name, grp_color),
         }
 
     # Subtract non-owner shares of own splits from composition (debit only —
@@ -934,10 +1014,20 @@ async def get_income_expenses_report(
             Category.id,
             Category.name,
             Category.color,
+            CategoryGroup.id,
+            CategoryGroup.name,
+            CategoryGroup.color,
             func.sum(amount_expr),
         )
         .select_from(Transaction)
         .join(Category, Transaction.category_id == Category.id)
+        .outerjoin(
+            CategoryGroup,
+            and_(
+                Category.group_id == CategoryGroup.id,
+                CategoryGroup.workspace_id == workspace_id,
+            ),
+        )
         .where(
             Transaction.workspace_id == workspace_id,
             report_date >= start,
@@ -952,9 +1042,14 @@ async def get_income_expenses_report(
             Category.is_ignored.is_(False),
             *acct_filter,
         )
-        .group_by(Category.id, Category.name, Category.color)
+        .group_by(
+            Category.id, Category.name, Category.color,
+            CategoryGroup.id, CategoryGroup.name, CategoryGroup.color,
+        )
     )
-    for cat_id, cat_name, cat_color, total_amount in inv_result.all():
+    for (
+        cat_id, cat_name, cat_color, grp_id, grp_name, grp_color, total_amount,
+    ) in inv_result.all():
         # Signed net per category; <= 0 contributes nothing.
         amount = float(total_amount or 0)
         if amount <= 0:
@@ -963,7 +1058,50 @@ async def get_income_expenses_report(
             "label": cat_name or "Investments",
             "color": cat_color or "#0EA5E9",
             "value": amount,
+            **_group_fields(grp_id, grp_name, grp_color),
         }
+
+    # Per-period investments, for trend[].composition. Same filters as above.
+    inv_trend_result = await session.execute(
+        select(
+            label_expr,
+            Category.id,
+            Category.name,
+            Category.color,
+            CategoryGroup.id,
+            CategoryGroup.name,
+            CategoryGroup.color,
+            func.sum(amount_expr),
+        )
+        .select_from(Transaction)
+        .join(Category, Transaction.category_id == Category.id)
+        .outerjoin(
+            CategoryGroup,
+            and_(
+                Category.group_id == CategoryGroup.id,
+                CategoryGroup.workspace_id == workspace_id,
+            ),
+        )
+        .where(
+            Transaction.workspace_id == workspace_id,
+            report_date >= start,
+            report_date <= axis_end,
+            Transaction.source != "opening_balance",
+            Transaction.type == "debit",
+            Transaction.status == "posted",
+            Transaction.transfer_pair_id.is_(None),
+            Transaction.is_ignored.is_(False),
+            Transaction.exclude_from_pnl.is_(False),
+            Category.treat_as_transfer.is_(True),
+            Category.is_ignored.is_(False),
+            *acct_filter,
+        )
+        .group_by(
+            label_expr, Category.id, Category.name, Category.color,
+            CategoryGroup.id, CategoryGroup.name, CategoryGroup.color,
+        )
+    )
+    inv_trend_rows = inv_trend_result.all()
 
     # Build per-category trend (sparklines) for the full date range
     cat_trend_result = await session.execute(
@@ -972,11 +1110,21 @@ async def get_income_expenses_report(
             Category.id,
             Category.name,
             Category.color,
+            CategoryGroup.id,
+            CategoryGroup.name,
+            CategoryGroup.color,
             Transaction.type,
             func.sum(amount_expr),
         )
         .select_from(Transaction)
         .outerjoin(Category, Transaction.category_id == Category.id)
+        .outerjoin(
+            CategoryGroup,
+            and_(
+                Category.group_id == CategoryGroup.id,
+                CategoryGroup.workspace_id == workspace_id,
+            ),
+        )
         .where(
             Transaction.workspace_id == workspace_id,
             report_date >= start,
@@ -986,13 +1134,20 @@ async def get_income_expenses_report(
             counts_as_user_pnl(),
             *acct_filter,
         )
-        .group_by(label_expr, Category.id, Category.name, Category.color, Transaction.type)
+        .group_by(
+            label_expr, Category.id, Category.name, Category.color,
+            CategoryGroup.id, CategoryGroup.name, CategoryGroup.color,
+            Transaction.type,
+        )
     )
 
     # Collect into dict[(cat_key, group)] -> {label, color, total, periods}
     cat_trend_map: dict[tuple[str, str], dict] = {}
     for row in cat_trend_result.all():
-        period_label, cat_id, cat_name, cat_color, txn_type, total_amount = row
+        (
+            period_label, cat_id, cat_name, cat_color,
+            grp_id, grp_name, grp_color, txn_type, total_amount,
+        ) = row
         # Signed net per category; <= 0 contributes nothing.
         amount = float(total_amount or 0)
         if amount <= 0:
@@ -1006,6 +1161,7 @@ async def get_income_expenses_report(
                 "color": cat_color if cat_color else "#6B7280",
                 "total": 0.0,
                 "periods": {},
+                **_group_fields(grp_id, grp_name, grp_color),
             }
         cat_trend_map[map_key]["total"] += amount
         cat_trend_map[map_key]["periods"][period_label] = (
@@ -1074,16 +1230,27 @@ async def get_income_expenses_report(
             # Fetch category info if needed
             if cat_id_str != "uncategorized" and cat_id_str not in cat_cache:
                 cat_row = await session.execute(
-                    select(Category.name, Category.color)
+                    select(
+                        Category.name, Category.color,
+                        CategoryGroup.id, CategoryGroup.name, CategoryGroup.color,
+                    )
+                    .outerjoin(
+                        CategoryGroup,
+                        and_(
+                            Category.group_id == CategoryGroup.id,
+                            CategoryGroup.workspace_id == workspace_id,
+                        ),
+                    )
                     .where(Category.id == proj["category_id"])
                 )
                 row = cat_row.one_or_none()
                 cat_cache[cat_id_str] = {
                     "label": row[0] if row else "Uncategorized",
                     "color": row[1] if row else "#6B7280",
+                    **(_group_fields(*row[2:]) if row else _group_fields(None, None, None)),
                 }
 
-            info = cat_cache.get(cat_id_str, {"label": "Uncategorized", "color": "#6B7280"})
+            info = cat_cache.get(cat_id_str, _UNCATEGORIZED_INFO)
 
             # Convert projection amount to primary currency
             converted, _ = await fx_convert(
@@ -1100,6 +1267,7 @@ async def get_income_expenses_report(
                     "label": info["label"],
                     "color": info["color"],
                     "value": proj_amount,
+                    **_info_group_fields(info),
                 }
 
             # Add to category trend map
@@ -1109,6 +1277,7 @@ async def get_income_expenses_report(
                     "color": info["color"],
                     "total": 0.0,
                     "periods": {},
+                    **_info_group_fields(info),
                 }
             cat_trend_map[comp_key]["total"] += proj_amount
             cat_trend_map[comp_key]["periods"][period_label] = (
@@ -1131,16 +1300,26 @@ async def get_income_expenses_report(
             forecast_period_label = _format_date_label(tx_report_date, interval)
             if cat_id_str != "uncategorized" and cat_id_str not in cat_cache:
                 cat_row = await session.execute(
-                    select(Category.name, Category.color).where(Category.id == tx.category_id)
+                    select(
+                        Category.name, Category.color,
+                        CategoryGroup.id, CategoryGroup.name, CategoryGroup.color,
+                    )
+                    .outerjoin(
+                        CategoryGroup,
+                        and_(
+                            Category.group_id == CategoryGroup.id,
+                            CategoryGroup.workspace_id == workspace_id,
+                        ),
+                    )
+                    .where(Category.id == tx.category_id)
                 )
                 row = cat_row.one_or_none()
                 cat_cache[cat_id_str] = {
                     "label": row[0] if row else "Uncategorized",
                     "color": row[1] if row else "#6B7280",
+                    **(_group_fields(*row[2:]) if row else _group_fields(None, None, None)),
                 }
-            info = cat_cache.get(
-                cat_id_str, {"label": "Uncategorized", "color": "#6B7280"}
-            )
+            info = cat_cache.get(cat_id_str, _UNCATEGORIZED_INFO)
             if tx.amount_primary is not None:
                 forecast_amount = float(tx.amount_primary)
             else:
@@ -1156,6 +1335,7 @@ async def get_income_expenses_report(
                     "label": info["label"],
                     "color": info["color"],
                     "value": forecast_amount,
+                    **_info_group_fields(info),
                 }
             if comp_key not in cat_trend_map:
                 cat_trend_map[comp_key] = {
@@ -1163,6 +1343,7 @@ async def get_income_expenses_report(
                     "color": info["color"],
                     "total": 0.0,
                     "periods": {},
+                    **_info_group_fields(info),
                 }
             cat_trend_map[comp_key]["total"] += forecast_amount
             cat_trend_map[comp_key]["periods"][forecast_period_label] = (
@@ -1193,6 +1374,7 @@ async def get_income_expenses_report(
             value=round(info["value"], 2),
             color=info["color"],
             group=group,
+            **_info_group_fields(info),
         ))
 
     # Build period labels from the same points used by the trend
@@ -1263,12 +1445,73 @@ async def get_income_expenses_report(
                     value=round(v, 2),
                     color=info["color"],
                     group=group,
+                    **_info_group_fields(info),
                 ))
+    # Investments live only in the trend composition, not in category_trend.
+    for (
+        period_label, cat_id, cat_name, cat_color,
+        grp_id, grp_name, grp_color, total_amount,
+    ) in inv_trend_rows:
+        amount = float(total_amount or 0)
+        if amount <= 0:
+            continue
+        for dp in trend:
+            if dp.date == period_label:
+                dp.composition.append(ReportCompositionItem(
+                    key=str(cat_id),
+                    label=cat_name or "Investments",
+                    value=round(amount, 2),
+                    color=cat_color or "#0EA5E9",
+                    group="investments",
+                    **_group_fields(grp_id, grp_name, grp_color),
+                ))
+
+    comparison: ReportComparison | None = None
+    if compare:
+        comp_start, comp_end = _comparison_window(start, axis_end, compare)
+        # Explicit dates mean actuals only, so these calls cannot recurse.
+        # Only summary and composition are used, so skip the trend with the
+        # coarsest interval.
+        async def actuals(window_start: date, window_end: date) -> ReportResponse:
+            return await get_income_expenses_report(
+                session, workspace_id, user_id, months, "yearly", currency,
+                account_ids=account_ids,
+                financial_year_start_month=financial_year_start_month,
+                start_date=window_start, end_date=window_end,
+            )
+
+        comp_report = await actuals(comp_start, comp_end)
+        # Presets add forecasts to the outer composition. Compare actuals only.
+        current_composition = (
+            (await actuals(start, axis_end)).composition
+            if include_forecasts
+            else composition
+        )
+        comparison = ReportComparison(
+            start_date=comp_start.isoformat(),
+            end_date=comp_end.isoformat(),
+            summary=comp_report.summary,
+            composition=comp_report.composition,
+            current_composition=current_composition,
+        )
 
     return ReportResponse(
         summary=summary, trend=trend, meta=meta,
         composition=composition, category_trend=category_trend,
+        comparison=comparison,
     )
+
+
+def _add_years(value: date, years: int) -> date:
+    """Add whole calendar years to a date.
+
+    Clamps Feb 29 to Feb 28 when the target year isn't a leap year, so the
+    result is always a valid calendar date rather than raising.
+    """
+    try:
+        return value.replace(year=value.year + years)
+    except ValueError:
+        return date(value.year + years, 2, 28)
 
 
 def _add_months(d: date, months: int) -> date:

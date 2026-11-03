@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { cleanup, screen, waitFor } from '@testing-library/react'
+import { cleanup, screen, waitFor, within } from '@testing-library/react'
 
 import ReportsPage from '@/pages/reports'
 import { renderWithProviders, t } from '@/test/utils'
@@ -149,7 +149,7 @@ it.each([
   await user.click(custom)
   await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
   const reportApi = tab === 'reports.netWorth' ? api.reports.netWorth : api.reports.incomeExpenses
-  await waitFor(() => expect(reportApi.mock.calls.at(-1)?.slice(-2)).toEqual([
+  await waitFor(() => expect(reportApi.mock.calls.at(-1)?.slice(5, 7)).toEqual([
     '2026-01-01', '2026-09-12',
   ]))
   await user.click(custom)
@@ -158,7 +158,7 @@ it.each([
   await waitFor(() => {
     expect(screen.getByRole('button', { name: t(fallback) })).toHaveClass('bg-primary')
     expect(reportApi.mock.calls.at(-1)?.[0]).toBe(months)
-    expect(reportApi.mock.calls.at(-1)?.slice(-2)).toEqual([undefined, undefined])
+    expect(reportApi.mock.calls.at(-1)?.slice(5, 7)).toEqual([undefined, undefined])
   })
   expect(custom).toHaveTextContent(t('reports.customRange'))
 })
@@ -170,12 +170,12 @@ it('preserves saved custom dates across supported tabs and preset dismissal', as
   await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
   for (const tab of ['reports.incomeExpenses', 'reports.moneyMap']) {
     await user.click(screen.getByRole('button', { name: t(tab) }))
-    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(-2))
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(5, 7))
       .toEqual(['2026-01-01', '2026-09-12']))
     expect(custom).toHaveClass('bg-primary')
   }
   await user.click(screen.getByRole('button', { name: t('reports.range6m') }))
-  await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(-2))
+  await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(5, 7))
     .toEqual([undefined, undefined]))
   const count = api.reports.incomeExpenses.mock.calls.length
   await user.click(custom)
@@ -185,7 +185,7 @@ it('preserves saved custom dates across supported tabs and preset dismissal', as
   expect(screen.getByRole('button', { name: t('reports.range6m') })).toHaveClass('bg-primary')
   await user.click(custom)
   await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
-  await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(-2))
+  await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(5, 7))
     .toEqual(['2026-01-01', '2026-09-12']))
   await user.click(screen.getByRole('button', { name: t('reports.cashFlow') }))
   await waitFor(() => expect(api.reports.cashFlow).toHaveBeenCalled())
@@ -487,5 +487,207 @@ describe('Reports page - year picker (issue #765)', () => {
     await screen.findByRole('heading', { name: t('reports.cashFlow') })
     expect(screen.queryByRole('button', { name: t('reports.year') })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: `${t('reports.year')} 2026` })).not.toBeInTheDocument()
+  })
+})
+
+const point = (date: string, value: number) => ({ date, value, breakdowns: {}, change: null })
+const trendItem = (key: string, group: string, values: [number, number]) => ({
+  key,
+  label: key,
+  color: '#6366F1',
+  total: values[0] + values[1],
+  group,
+  series: [point('Jan', values[0]), point('Feb', values[1])],
+})
+
+function incomeExpensesReport(extra: Partial<ReportResponse> = {}): ReportResponse {
+  return {
+    ...emptyReport('income_expenses'),
+    summary: {
+      primary_value: 500,
+      change_amount: 10,
+      change_percent: 2,
+      breakdowns: [
+        { key: 'income', label: 'Income', value: 1000, color: '#10B981' },
+        { key: 'expenses', label: 'Expenses', value: 500, color: '#F43F5E' },
+      ],
+    },
+    composition: [{ key: 'food', label: 'Food', value: 500, color: '#F59E0B', group: 'expenses' }],
+    category_trend: [
+      trendItem('food', 'expenses', [200, 300]),
+      trendItem('rent', 'expenses', [100, 100]),
+      trendItem('salary', 'income', [500, 500]),
+    ],
+    ...extra,
+  }
+}
+
+describe('Reports page, spending by category card', () => {
+  it('shows the card title, switches side and toggles the share mode', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(incomeExpensesReport())
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
+
+    const card = await screen.findByTestId('category-stack-card')
+    expect(within(card).getByText(t('reports.spendingByCategory'))).toBeInTheDocument()
+
+    await user.click(within(card).getByRole('button', { name: t('reports.byIncome') }))
+    expect(within(card).getByText(t('reports.incomeByCategory'))).toBeInTheDocument()
+
+    const share = within(card).getByRole('button', { name: t('reports.stackPercent') })
+    expect(share).toHaveAttribute('aria-pressed', 'false')
+    await user.click(share)
+    expect(share).toHaveAttribute('aria-pressed', 'true')
+  })
+})
+
+describe('Reports page, period comparison', () => {
+  const comparisonReport = () =>
+    incomeExpensesReport({
+      comparison: {
+        start_date: '2025-08-01',
+        end_date: '2025-08-31',
+        summary: {
+          primary_value: 450,
+          change_amount: 0,
+          change_percent: null,
+          breakdowns: [
+            { key: 'income', label: 'Income', value: 900, color: '#10B981' },
+            { key: 'expenses', label: 'Expenses', value: 400, color: '#F43F5E' },
+          ],
+        },
+        composition: [{ key: 'food', label: 'Food', value: 400, color: '#F59E0B', group: 'expenses' }],
+        current_composition: [{ key: 'food', label: 'Food', value: 500, color: '#F59E0B', group: 'expenses' }],
+      },
+    })
+
+  it('sends the compare mode and renders the hero deltas and the table', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(comparisonReport())
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
+    expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBeUndefined()
+
+    await user.click(within(screen.getByTestId('reports-compare')).getByRole('button', { name: t('reports.comparePrevious') }))
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBe('previous'))
+
+    expect(await screen.findByText(new RegExp(t('reports.vsPrevious')))).toBeInTheDocument()
+    expect(screen.getByText('+$100.00 (+25.0%)')).toBeInTheDocument()
+    const row = screen.getByRole('row', { name: /Food/ })
+    expect(within(row).getByText('+$100.00')).toBeInTheDocument()
+    expect(within(row).getByText('+25.0%')).toBeInTheDocument()
+
+    await user.click(within(screen.getByTestId('reports-compare')).getByRole('button', { name: t('reports.compareOff') }))
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBeUndefined())
+  })
+
+  it('never sends compare from the Money Map tab', async () => {
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
+    await user.click(within(await screen.findByTestId('reports-compare')).getByRole('button', { name: t('reports.compareYearAgo') }))
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBe('year_ago'))
+
+    await user.click(screen.getByRole('button', { name: t('reports.moneyMap') }))
+    await waitFor(() => expect(screen.queryByTestId('reports-compare')).not.toBeInTheDocument())
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBeUndefined())
+  })
+})
+
+describe('Reports page, composition donut by category group', () => {
+  const groupedReport = () =>
+    incomeExpensesReport({
+      composition: [
+        { key: 'rent', label: 'Rent', value: 300, color: '#F59E0B', group: 'expenses', group_id: 'g1', group_name: 'Essentials', group_color: '#112233' },
+        { key: 'food', label: 'Food', value: 200, color: '#10B981', group: 'expenses', group_id: 'g1', group_name: 'Essentials', group_color: '#112233' },
+        { key: 'fun', label: 'Fun', value: 100, color: '#8B5CF6', group: 'expenses' },
+      ],
+    })
+
+  it('narrows to one group on click and goes back', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(groupedReport())
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
+
+    const card = (await screen.findByText(t('reports.composition'))).closest('.rounded-xl') as HTMLElement
+    await user.click(within(card).getByRole('button', { name: t('reports.byExpenses') }))
+
+    expect(within(card).getByRole('button', { name: 'Essentials' })).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: t('reports.noGroup') })).toBeInTheDocument()
+
+    await user.click(within(card).getByRole('button', { name: 'Essentials' }))
+    expect(within(card).getByText('Rent')).toBeInTheDocument()
+    expect(within(card).getByText('Food')).toBeInTheDocument()
+    expect(within(card).queryByText('Fun')).not.toBeInTheDocument()
+
+    await user.click(within(card).getByRole('button', { name: t('common.back') }))
+    expect(within(card).getByRole('button', { name: 'Essentials' })).toBeInTheDocument()
+
+    await user.click(within(card).getByRole('button', { name: 'Essentials' }))
+    await user.click(within(card).getByRole('button', { name: t('reports.byIncome') }))
+    expect(within(card).queryByRole('button', { name: t('common.back') })).not.toBeInTheDocument()
+  })
+})
+
+describe('Reports page, income statement tab', () => {
+  const item = (
+    key: string,
+    group: 'income' | 'expenses',
+    value: number,
+    groupId: string,
+    groupName: string,
+  ) => ({ key, label: key, value, color: '#888', group, group_id: groupId, group_name: groupName, group_color: '#444' })
+
+  const statementReport = (): ReportResponse => {
+    const composition = [
+      item('Salary', 'income', 1000, 'work', 'Work Income'),
+      item('Rent', 'expenses', 400, 'housing', 'Housing'),
+      item('Groceries', 'expenses', 200, 'food', 'Food'),
+    ]
+    return {
+      ...emptyReport('income_expenses'),
+      trend: ['2026-07', '2026-08'].map((date) => ({ date, value: 0, breakdowns: {}, change: null, composition })),
+    }
+  }
+
+  it('shows the statement, expands a group and sends no compare', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(statementReport())
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: t('reports.incomeStatement') }))
+
+    const table = await screen.findByTestId('income-statement-table')
+    expect(within(table).getByText(t('reports.statementIncome'))).toBeInTheDocument()
+    expect(within(table).getByText(t('reports.statementExpenses'))).toBeInTheDocument()
+    expect(within(table).getByText(t('reports.statementResult'))).toBeInTheDocument()
+    expect(within(table).getByText('Housing')).toBeInTheDocument()
+    expect(within(table).queryByText('Rent')).not.toBeInTheDocument()
+
+    const housing = within(table).getByRole('button', { name: 'Housing' })
+    expect(housing).toHaveAttribute('aria-expanded', 'false')
+    housing.focus()
+    await user.keyboard('{Enter}')
+    expect(housing).toHaveAttribute('aria-expanded', 'true')
+    expect(within(table).getByText('Rent')).toBeInTheDocument()
+    await user.click(housing)
+    expect(housing).toHaveAttribute('aria-expanded', 'false')
+    await user.click(housing)
+
+    expect(screen.queryByTestId('reports-compare')).not.toBeInTheDocument()
+    expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBeUndefined()
+  })
+
+  it('asks for explicit dates, so the statement shows actuals only', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(statementReport())
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
+    // 1Y at offset 0 sends no dates on this tab.
+    expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(5, 7)).toEqual([undefined, undefined])
+
+    await user.click(screen.getByRole('button', { name: t('reports.incomeStatement') }))
+    await waitFor(() => {
+      const [start, end] = api.reports.incomeExpenses.mock.calls.at(-1)?.slice(5, 7) ?? []
+      expect(start).toMatch(/^\d{4}-\d{2}-01$/)
+      expect(end).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    })
   })
 })

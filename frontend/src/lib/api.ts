@@ -86,6 +86,7 @@ import type {
   BalanceHistory,
   PaginatedTransactions,
   ReportResponse,
+  ReportCompareMode,
   Group,
   GroupKind,
   GroupMember,
@@ -1554,12 +1555,14 @@ export const reports = {
     days?: number,
     startDate?: string,
     endDate?: string,
+    compare?: ReportCompareMode,
   ): Promise<ReportResponse> => {
     const extra = acctIdsParam(accountIds)
     const { data } = await api.get('/reports/income-expenses', {
       params: {
         months, interval, period, days,
         ...(startDate && endDate ? { start_date: startDate, end_date: endDate } : {}),
+        ...(compare ? { compare } : {}),
         ...(extra.params ?? {}),
       },
       ...(extra.paramsSerializer ? { paramsSerializer: extra.paramsSerializer } : {}),
