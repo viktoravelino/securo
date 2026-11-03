@@ -626,3 +626,44 @@ describe('Reports page, composition donut by category group', () => {
     expect(within(card).queryByRole('button', { name: t('common.back') })).not.toBeInTheDocument()
   })
 })
+
+describe('Reports page, income statement tab', () => {
+  const item = (
+    key: string,
+    group: 'income' | 'expenses',
+    value: number,
+    groupId: string,
+    groupName: string,
+  ) => ({ key, label: key, value, color: '#888', group, group_id: groupId, group_name: groupName, group_color: '#444' })
+
+  const statementReport = (): ReportResponse => {
+    const composition = [
+      item('Salary', 'income', 1000, 'work', 'Work Income'),
+      item('Rent', 'expenses', 400, 'housing', 'Housing'),
+      item('Groceries', 'expenses', 200, 'food', 'Food'),
+    ]
+    return {
+      ...emptyReport('income_expenses'),
+      trend: ['2026-07', '2026-08'].map((date) => ({ date, value: 0, breakdowns: {}, change: null, composition })),
+    }
+  }
+
+  it('shows the statement, expands a group and sends no compare', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(statementReport())
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: t('reports.incomeStatement') }))
+
+    const table = await screen.findByTestId('income-statement-table')
+    expect(within(table).getByText(t('reports.statementIncome'))).toBeInTheDocument()
+    expect(within(table).getByText(t('reports.statementExpenses'))).toBeInTheDocument()
+    expect(within(table).getByText(t('reports.statementResult'))).toBeInTheDocument()
+    expect(within(table).getByText('Housing')).toBeInTheDocument()
+    expect(within(table).queryByText('Rent')).not.toBeInTheDocument()
+
+    await user.click(within(table).getByText('Housing'))
+    expect(within(table).getByText('Rent')).toBeInTheDocument()
+
+    expect(screen.queryByTestId('reports-compare')).not.toBeInTheDocument()
+    expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBeUndefined()
+  })
+})

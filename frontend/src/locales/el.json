@@ -2179,7 +2179,18 @@
     "previous": "Προηγούμενο",
     "deltaPercent": "Μεταβολή %",
     "noGroup": "Χωρίς ομάδα",
-    "byGroup": "Ανά ομάδα"
+    "byGroup": "Ανά ομάδα",
+    "incomeStatement": "Κατάσταση αποτελεσμάτων",
+    "incomeStatementTitle": "Κατάσταση αποτελεσμάτων",
+    "statementIncome": "Έσοδα",
+    "statementExpenses": "(−) Έξοδα",
+    "statementResult": "= Αποτέλεσμα",
+    "statementInvestments": "(−) Επενδύσεις",
+    "statementNetResult": "= Καθαρό αποτέλεσμα",
+    "statementSavingsRate": "Ποσοστό αποταμίευσης",
+    "statementTotal": "Σύνολο",
+    "statementShare": "% των εσόδων",
+    "exportCsv": "Εξαγωγή CSV"
   },
   "fiscal": {
     "kind": {

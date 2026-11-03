@@ -2125,7 +2125,18 @@
     "previous": "Vorig",
     "deltaPercent": "Verandering %",
     "noGroup": "Geen groep",
-    "byGroup": "Per groep"
+    "byGroup": "Per groep",
+    "incomeStatement": "Winst-en-verliesrekening",
+    "incomeStatementTitle": "Winst-en-verliesrekening",
+    "statementIncome": "Inkomsten",
+    "statementExpenses": "(−) Uitgaven",
+    "statementResult": "= Resultaat",
+    "statementInvestments": "(−) Beleggingen",
+    "statementNetResult": "= Nettoresultaat",
+    "statementSavingsRate": "Spaarquote",
+    "statementTotal": "Totaal",
+    "statementShare": "% van inkomsten",
+    "exportCsv": "CSV exporteren"
   },
   "payees": {
     "noPayeeFound": "Geen begunstigde gevonden.",

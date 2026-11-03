@@ -2127,7 +2127,18 @@
     "previous": "Precedente",
     "deltaPercent": "Variazione %",
     "noGroup": "Nessun gruppo",
-    "byGroup": "Per gruppo"
+    "byGroup": "Per gruppo",
+    "incomeStatement": "Conto economico",
+    "incomeStatementTitle": "Conto economico",
+    "statementIncome": "Entrate",
+    "statementExpenses": "(−) Spese",
+    "statementResult": "= Risultato",
+    "statementInvestments": "(−) Investimenti",
+    "statementNetResult": "= Risultato netto",
+    "statementSavingsRate": "Tasso di risparmio",
+    "statementTotal": "Totale",
+    "statementShare": "% delle entrate",
+    "exportCsv": "Esporta CSV"
   },
   "payees": {
     "noPayeeFound": "Nessun beneficiario trovato.",

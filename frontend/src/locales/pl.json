@@ -2212,7 +2212,18 @@
     "previous": "Poprzedni",
     "deltaPercent": "Zmiana %",
     "noGroup": "Bez grupy",
-    "byGroup": "Według grup"
+    "byGroup": "Według grup",
+    "incomeStatement": "Rachunek zysków i strat",
+    "incomeStatementTitle": "Rachunek zysków i strat",
+    "statementIncome": "Przychody",
+    "statementExpenses": "(−) Wydatki",
+    "statementResult": "= Wynik",
+    "statementInvestments": "(−) Inwestycje",
+    "statementNetResult": "= Wynik netto",
+    "statementSavingsRate": "Stopa oszczędności",
+    "statementTotal": "Razem",
+    "statementShare": "% przychodów",
+    "exportCsv": "Eksportuj CSV"
   },
   "payees": {
     "noPayeeFound": "Nie znaleziono odbiorcy.",

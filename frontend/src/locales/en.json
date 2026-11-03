@@ -2123,7 +2123,18 @@
     "previous": "Previous",
     "deltaPercent": "Change %",
     "noGroup": "No group",
-    "byGroup": "By group"
+    "byGroup": "By group",
+    "incomeStatement": "Income Statement",
+    "incomeStatementTitle": "Income statement",
+    "statementIncome": "Revenue",
+    "statementExpenses": "(−) Expenses",
+    "statementResult": "= Result",
+    "statementInvestments": "(−) Investments",
+    "statementNetResult": "= Net result",
+    "statementSavingsRate": "Savings rate",
+    "statementTotal": "Total",
+    "statementShare": "% of revenue",
+    "exportCsv": "Export CSV"
   },
   "payees": {
     "noPayeeFound": "No payee found.",

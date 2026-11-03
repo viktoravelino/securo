@@ -2239,7 +2239,18 @@
     "previous": "Predchádzajúce",
     "deltaPercent": "Zmena %",
     "noGroup": "Bez skupiny",
-    "byGroup": "Podľa skupiny"
+    "byGroup": "Podľa skupiny",
+    "incomeStatement": "Výkaz ziskov a strát",
+    "incomeStatementTitle": "Výkaz ziskov a strát",
+    "statementIncome": "Príjmy",
+    "statementExpenses": "(−) Výdavky",
+    "statementResult": "= Výsledok",
+    "statementInvestments": "(−) Investície",
+    "statementNetResult": "= Čistý výsledok",
+    "statementSavingsRate": "Miera úspor",
+    "statementTotal": "Spolu",
+    "statementShare": "% príjmov",
+    "exportCsv": "Exportovať CSV"
   },
   "payees": {
     "noPayeeFound": "Príjemca sa nenašiel.",

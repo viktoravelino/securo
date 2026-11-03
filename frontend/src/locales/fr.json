@@ -2127,7 +2127,18 @@
     "previous": "Précédent",
     "deltaPercent": "Variation %",
     "noGroup": "Sans groupe",
-    "byGroup": "Par groupe"
+    "byGroup": "Par groupe",
+    "incomeStatement": "Compte de résultat",
+    "incomeStatementTitle": "Compte de résultat",
+    "statementIncome": "Revenus",
+    "statementExpenses": "(−) Dépenses",
+    "statementResult": "= Résultat",
+    "statementInvestments": "(−) Investissements",
+    "statementNetResult": "= Résultat net",
+    "statementSavingsRate": "Taux d'épargne",
+    "statementTotal": "Total",
+    "statementShare": "% des revenus",
+    "exportCsv": "Exporter en CSV"
   },
   "payees": {
     "noPayeeFound": "Aucun bénéficiaire trouvé.",

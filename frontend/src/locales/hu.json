@@ -2123,7 +2123,18 @@
     "previous": "Előző",
     "deltaPercent": "Változás %",
     "noGroup": "Nincs csoport",
-    "byGroup": "Csoportonként"
+    "byGroup": "Csoportonként",
+    "incomeStatement": "Eredménykimutatás",
+    "incomeStatementTitle": "Eredménykimutatás",
+    "statementIncome": "Bevételek",
+    "statementExpenses": "(−) Kiadások",
+    "statementResult": "= Eredmény",
+    "statementInvestments": "(−) Befektetések",
+    "statementNetResult": "= Nettó eredmény",
+    "statementSavingsRate": "Megtakarítási ráta",
+    "statementTotal": "Összesen",
+    "statementShare": "A bevétel %-a",
+    "exportCsv": "CSV exportálása"
   },
   "payees": {
     "noPayeeFound": "Nincs ilyen partner.",

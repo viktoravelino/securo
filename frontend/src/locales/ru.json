@@ -2140,7 +2140,18 @@
     "previous": "Предыдущий",
     "deltaPercent": "Изменение %",
     "noGroup": "Без группы",
-    "byGroup": "По группам"
+    "byGroup": "По группам",
+    "incomeStatement": "Отчёт о прибылях и убытках",
+    "incomeStatementTitle": "Отчёт о прибылях и убытках",
+    "statementIncome": "Доходы",
+    "statementExpenses": "(−) Расходы",
+    "statementResult": "= Результат",
+    "statementInvestments": "(−) Инвестиции",
+    "statementNetResult": "= Чистый результат",
+    "statementSavingsRate": "Норма сбережений",
+    "statementTotal": "Итого",
+    "statementShare": "% от доходов",
+    "exportCsv": "Экспорт в CSV"
   },
   "payees": {
     "noPayeeFound": "Получатель не найден.",

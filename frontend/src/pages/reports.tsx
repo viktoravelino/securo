@@ -19,10 +19,11 @@ import {
   ReferenceLine,
   ResponsiveContainer,
 } from 'recharts'
-import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, HelpCircle, X } from 'lucide-react'
+import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, Download, HelpCircle, X } from 'lucide-react'
 import { reports } from '@/lib/api'
 import { extractApiError } from '@/lib/api-errors'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Button } from '@/components/ui/button'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { PageHeader } from '@/components/page-header'
@@ -37,6 +38,8 @@ import { groupComposition, type GroupSlice } from '@/lib/composition-groups'
 import { buildComparisonRows, deltaColorClass, deltaPercent } from '@/lib/report-comparison'
 import { CategoryStackChart } from '@/components/reports/CategoryStackChart'
 import { PeriodComparisonTable } from '@/components/reports/PeriodComparisonTable'
+import { IncomeStatementTable } from '@/components/reports/IncomeStatementTable'
+import { buildIncomeStatement, formatBucketLabel, type IncomeStatement } from '@/lib/income-statement'
 import { localDateString, todayInTimezone } from '@/lib/date-utils'
 import { monthLabel } from '@/lib/month-utils'
 import { periodWindow, windowMonths, type PeriodPreset } from '@/lib/report-period'
@@ -171,6 +174,24 @@ interface ReportTab {
   fallbackInterval: string
 }
 
+/** Download the income statement as a UTF-8 CSV (with BOM) of raw numbers. */
+function downloadStatementCsv(statement: IncomeStatement, filename: string) {
+  const quote = (cell: string) => `"${cell.replace(/"/g, '""')}"`
+  const rows = statement.lines.map((line) => [
+    quote(line.label),
+    ...line.values,
+    line.total,
+    line.shareOfIncome ?? '',
+  ].join(','))
+  const csv = '\uFEFF' + rows.join('\r\n')
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 const REPORT_TABS: ReportTab[] = [
   {
     key: 'net_worth', labelKey: 'reports.netWorth', enabled: true,
@@ -179,6 +200,11 @@ const REPORT_TABS: ReportTab[] = [
   },
   {
     key: 'income_expenses', labelKey: 'reports.incomeExpenses', enabled: true,
+    rangeOptions: HISTORICAL_RANGE_OPTIONS, intervalOptions: HISTORICAL_INTERVAL_OPTIONS,
+    supportsCustomRange: true, fallbackRangeKey: '1y', fallbackInterval: 'monthly',
+  },
+  {
+    key: 'income_statement', labelKey: 'reports.incomeStatement', enabled: true,
     rangeOptions: HISTORICAL_RANGE_OPTIONS, intervalOptions: HISTORICAL_INTERVAL_OPTIONS,
     supportsCustomRange: true, fallbackRangeKey: '1y', fallbackInterval: 'monthly',
   },
@@ -283,6 +309,8 @@ export default function ReportsPage() {
   // The Money Map (Sankey) tab is driven by the same income/expenses
   // composition, aggregated over the selected historical range.
   const isMoneyMap = activeTab === 'money_map'
+  // The Income Statement (DRE) tab is a table built from the same income/expenses report.
+  const isStatement = activeTab === 'income_statement'
   const rangeOptions = currentTab.rangeOptions
   // Cash flow's forecast presets don't make sense with a past-only calendar
   // range, so custom is only offered for the historical tabs (Net Worth,
@@ -416,7 +444,7 @@ export default function ReportsPage() {
     queryFn: () =>
       isCashFlow
         ? reports.cashFlow(months, interval, cashFlowBaseline, acctIds)
-        : activeTab === 'income_expenses' || isMoneyMap
+        : activeTab === 'income_expenses' || isMoneyMap || isStatement
           ? reports.incomeExpenses(months, interval, acctIds, period, days, apiStart, apiEnd, compare)
           : reports.netWorth(months, interval, acctIds, walletIds, period, apiStart, apiEnd),
     // Only request a custom report with both committed endpoints.
@@ -531,6 +559,17 @@ export default function ReportsPage() {
   }
 
   const composition = data?.composition ?? []
+
+  const statement = buildIncomeStatement(trend, {
+    income: t('reports.statementIncome'),
+    expenses: t('reports.statementExpenses'),
+    result: t('reports.statementResult'),
+    investments: t('reports.statementInvestments'),
+    netResult: t('reports.statementNetResult'),
+    savingsRate: t('reports.statementSavingsRate'),
+    noGroup: t('reports.noGroup'),
+    uncategorized: t('reports.uncategorized'),
+  })
 
   // Composition toggle options per report type
   const compositionOptions = activeTab === 'net_worth'
@@ -975,7 +1014,48 @@ export default function ReportsPage() {
 
       {!isError && (
       <>
+      {/* Income Statement (DRE) */}
+      {isStatement && (
+        <div className="bg-card rounded-xl border border-border shadow-sm">
+          <div className="px-5 pt-5 pb-3 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-foreground">{t('reports.incomeStatementTitle')}</p>
+              <p className="text-xs text-muted-foreground">{periodLabel}</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isLoading || trend.length === 0}
+              onClick={() =>
+                downloadStatementCsv(
+                  statement,
+                  `income-statement-${activeWindow?.from ?? trend[0].date}-${activeWindow?.to ?? trend[trend.length - 1].date}.csv`,
+                )
+              }
+            >
+              <Download className="h-3.5 w-3.5" />
+              {t('reports.exportCsv')}
+            </Button>
+          </div>
+          <div className="pb-3">
+            {isLoading ? (
+              <div className="px-5"><Skeleton className="h-64 w-full" /></div>
+            ) : trend.length === 0 ? (
+              <p className="text-muted-foreground text-sm text-center py-16">{t('reports.noData')}</p>
+            ) : (
+              <IncomeStatementTable
+                statement={statement}
+                currency={userCurrency}
+                locale={locale}
+                periodLabel={(date) => formatBucketLabel(date, interval, dateLocale)}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Hero Card */}
+      {!isStatement && (
       <div className="bg-card rounded-xl border border-border shadow-sm mb-5">
         <div className="px-5 py-4">
           {isLoading ? (
@@ -1074,6 +1154,7 @@ export default function ReportsPage() {
           )}
         </div>
       </div>
+      )}
 
       {/* Flow (Sankey) */}
       {isMoneyMap && (
@@ -1111,7 +1192,7 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {!isMoneyMap && (
+      {!isMoneyMap && !isStatement && (
       <>
       {/* Main Trend Chart */}
       <div className="bg-card rounded-xl border border-border shadow-sm mb-5">

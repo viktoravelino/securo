@@ -2123,7 +2123,18 @@
     "previous": "前期",
     "deltaPercent": "変化率 %",
     "noGroup": "グループなし",
-    "byGroup": "グループ別"
+    "byGroup": "グループ別",
+    "incomeStatement": "損益計算書",
+    "incomeStatementTitle": "損益計算書",
+    "statementIncome": "収益",
+    "statementExpenses": "(−) 支出",
+    "statementResult": "= 結果",
+    "statementInvestments": "(−) 投資",
+    "statementNetResult": "= 純結果",
+    "statementSavingsRate": "貯蓄率",
+    "statementTotal": "合計",
+    "statementShare": "収益比 %",
+    "exportCsv": "CSVをエクスポート"
   },
   "payees": {
     "noPayeeFound": "取引相手が見つかりません。",

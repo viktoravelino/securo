@@ -2140,7 +2140,18 @@
     "previous": "Попередній",
     "deltaPercent": "Зміна %",
     "noGroup": "Без групи",
-    "byGroup": "За групами"
+    "byGroup": "За групами",
+    "incomeStatement": "Звіт про доходи та витрати",
+    "incomeStatementTitle": "Звіт про доходи та витрати",
+    "statementIncome": "Доходи",
+    "statementExpenses": "(−) Витрати",
+    "statementResult": "= Результат",
+    "statementInvestments": "(−) Інвестиції",
+    "statementNetResult": "= Чистий результат",
+    "statementSavingsRate": "Норма заощаджень",
+    "statementTotal": "Разом",
+    "statementShare": "% від доходів",
+    "exportCsv": "Експорт у CSV"
   },
   "payees": {
     "noPayeeFound": "Отримувача не знайдено.",

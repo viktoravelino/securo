@@ -2255,7 +2255,18 @@
     "previous": "Předchozí",
     "deltaPercent": "Změna %",
     "noGroup": "Bez skupiny",
-    "byGroup": "Podle skupiny"
+    "byGroup": "Podle skupiny",
+    "incomeStatement": "Výkaz zisků a ztrát",
+    "incomeStatementTitle": "Výkaz zisků a ztrát",
+    "statementIncome": "Příjmy",
+    "statementExpenses": "(−) Výdaje",
+    "statementResult": "= Výsledek",
+    "statementInvestments": "(−) Investice",
+    "statementNetResult": "= Čistý výsledek",
+    "statementSavingsRate": "Míra úspor",
+    "statementTotal": "Celkem",
+    "statementShare": "% příjmů",
+    "exportCsv": "Exportovat CSV"
   },
   "payees": {
     "noPayeeFound": "Příjemce nebyl nalezen.",

@@ -2127,7 +2127,18 @@
     "previous": "Anterior",
     "deltaPercent": "Variação %",
     "noGroup": "Sem grupo",
-    "byGroup": "Por grupo"
+    "byGroup": "Por grupo",
+    "incomeStatement": "DRE",
+    "incomeStatementTitle": "Demonstração de resultados",
+    "statementIncome": "Receitas",
+    "statementExpenses": "(−) Despesas",
+    "statementResult": "= Resultado",
+    "statementInvestments": "(−) Investimentos",
+    "statementNetResult": "= Resultado líquido",
+    "statementSavingsRate": "Taxa de poupança",
+    "statementTotal": "Total",
+    "statementShare": "% da receita",
+    "exportCsv": "Exportar CSV"
   },
   "payees": {
     "noPayeeFound": "Nenhuma pessoa encontrada.",
