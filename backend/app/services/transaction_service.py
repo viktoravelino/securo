@@ -29,6 +29,7 @@ from app.schemas.transaction import (
 )
 from app.schemas.transaction_split import TransactionSplitInput, TransactionSplitsInput
 from app.services import reconciliation_service, split_service
+from app.services.category_side import get_category_sides, totals_by_side
 from app.services.account_service import get_account, get_running_balances
 from app.services.credit_card_service import apply_effective_date, cc_cycle_bill_due_dates
 from app.services.rule_service import apply_rules_to_transaction
@@ -502,17 +503,20 @@ async def get_transactions(
         )
         summary_rows = await session.execute(
             select(
+                pnl_subq.c.category_id,
                 pnl_subq.c.type,
                 func.coalesce(func.sum(func.abs(amount_norm)), 0),
-            ).group_by(pnl_subq.c.type)
+            ).group_by(pnl_subq.c.category_id, pnl_subq.c.type)
         )
-        income = Decimal("0")
-        expense = Decimal("0")
-        for row_type, row_total in summary_rows:
-            if row_type == "credit":
-                income = Decimal(str(row_total or 0))
-            elif row_type == "debit":
-                expense = Decimal(str(row_total or 0))
+        # Refunds net against their category rather than counting as income.
+        sides = await get_category_sides(session, workspace_id)
+        income, expense = totals_by_side(
+            sides,
+            [
+                (cat_id, row_type, Decimal(str(row_total or 0)))
+                for cat_id, row_type, row_total in summary_rows
+            ],
+        )
 
         # Excluded: the absolute total of everything filtered out of P/L for
         # the same rows — the complement of `counts_as_pnl()`. Surfaces

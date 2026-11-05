@@ -125,26 +125,18 @@ describe('buildIncomeStatement', () => {
 })
 
 describe('buildIncomeStatement refunds', () => {
-  const groceries = [
-    point('2026-01', [item('groceries', 'expenses', 150, 'food'), item('groceries', 'income', 40, 'food')]),
-    point('2026-02', [item('groceries', 'expenses', 250, 'food'), item('salary', 'income', 800, 'work')]),
-  ]
-
-  it('nets a credit in an expense category against that category, not revenue', () => {
-    const { lines } = buildIncomeStatement(groceries, labels)
-    expect(find(lines, 'expenses:g:food:c:groceries')?.values).toEqual([110, 250])
-    expect(find(lines, 'income:g:food:c:groceries')).toBeUndefined()
-    expect(find(lines, 'income')?.total).toBe(800)
-    expect(find(lines, 'expenses')?.total).toBe(360)
-  })
-
-  it('keeps a mostly-credit category as revenue, net of its debits', () => {
+  it('reads the values the API already netted, including a negative refund-only period', () => {
     const { lines } = buildIncomeStatement(
-      [point('2026-01', [item('freelance', 'income', 500, 'work'), item('freelance', 'expenses', 60, 'work')])],
+      [
+        point('2026-01', [item('groceries', 'expenses', 110, 'food')]),
+        point('2026-02', [item('groceries', 'expenses', -40, 'food'), item('salary', 'income', 800, 'work')]),
+      ],
       labels,
     )
-    expect(find(lines, 'income:g:work:c:freelance')?.values).toEqual([440])
-    expect(find(lines, 'expenses')?.total).toBe(0)
+    expect(find(lines, 'expenses:g:food:c:groceries')?.values).toEqual([110, -40])
+    expect(find(lines, 'income')?.total).toBe(800)
+    expect(find(lines, 'expenses')?.total).toBe(70)
+    expect(find(lines, 'result')?.total).toBe(730)
   })
 
   it('leaves an uncategorized credit as revenue', () => {

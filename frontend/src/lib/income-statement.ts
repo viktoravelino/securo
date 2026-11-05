@@ -69,28 +69,13 @@ export function buildIncomeStatement(trend: ReportDataPoint[], labels: Statement
     return categories
   }
 
-  // A refund is a credit, so the API reports it as income of the category it
-  // refunds. When a category has both sides, net them: a refund lowers that
-  // category's expenses instead of adding to revenue. The larger side keeps the
-  // category. Uncategorized credits stay revenue.
-  const collectNetted = () => {
-    const income = collect('income')
-    const expenses = collect('expenses')
-    for (const [id, expense] of expenses) {
-      const credit = income.get(id)
-      if (!credit || expense.item.key === 'uncategorized') continue
-      const net = subValues(expense.values, credit.values)
-      if (sum(net) >= 0) {
-        expense.values = net
-        income.delete(id)
-      } else {
-        credit.values = net.map((v) => -v)
-        expenses.delete(id)
-      }
-    }
-    return { income: [...income.values()], expenses: [...expenses.values()], investments: [...collect('investments').values()] }
+  // The API already nets refunds against their category, so a period can hold
+  // a negative expense value. The statement reads the response as is.
+  const collected = {
+    income: [...collect('income').values()],
+    expenses: [...collect('expenses').values()],
+    investments: [...collect('investments').values()],
   }
-  const collected = collectNetted()
 
   const categoryLabel = (item: ReportCompositionItem) =>
     item.key === 'uncategorized' ? labels.uncategorized : item.label

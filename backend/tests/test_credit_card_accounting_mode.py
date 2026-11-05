@@ -1408,7 +1408,7 @@ class TestEffectiveBillDateFiltersList:
         assert tx.bill_id is None
 
     @pytest.mark.asyncio
-    async def test_credit_tx_with_bill_id_counts_as_income(
+    async def test_credit_tx_with_bill_id_is_netted_not_income(
         self, session, test_user, test_workspace, cc_account
     ):
         """Refund/return txs are type=credit. Per-bill summary must include
@@ -1444,7 +1444,9 @@ class TestEffectiveBillDateFiltersList:
         )
 
         assert summary is not None
-        assert summary["monthly_income"] == 80.0
+        # The credit belongs to the bill, so the bill nets it; a card has no income.
+        assert summary["monthly_income"] == 0.0
+        assert summary["monthly_expenses"] == -80.0
 
     @pytest.mark.asyncio
     async def test_cc_refund_credit_nets_against_debits_in_bill_total(

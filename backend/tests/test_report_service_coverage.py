@@ -928,8 +928,11 @@ async def test_custom_income_expenses_only_include_in_range_actuals(
         (900, 'credit', start, 'pending'),
         (-800, 'debit', end, 'pending'),
     ]:
+        # Debits stay uncategorized so the credit-only category keeps its
+        # income side (a shared category would net them against each other).
         await _add_txn(session, test_user.id, account.id, amount, kind, day,
-                       status=status, category_id=category.id, currency=currency)
+                       status=status, currency=currency,
+                       category_id=category.id if kind == 'credit' else None)
     recurring = await _make_recurring(
         session, test_user.id, account.id, 600, 'credit',
         next_occurrence=start, category_id=category.id, currency=currency,

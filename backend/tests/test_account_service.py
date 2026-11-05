@@ -943,8 +943,8 @@ async def test_get_account_summary_bill_nets_paired_payment_when_cycle_starts_fl
     assert summary is not None
     # 1000 (charge) - 100 (refund) - 400 (intermediate payment) = 500
     assert summary["monthly_expenses"] == pytest.approx(500.0)
-    # the payment is not income; the refund still is
-    assert summary["monthly_income"] == pytest.approx(100.0)
+    # neither the payment nor the refund is income: both are netted into the bill
+    assert summary["monthly_income"] == pytest.approx(0.0)
 
 
 @pytest.mark.asyncio

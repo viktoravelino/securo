@@ -36,6 +36,7 @@ from app.services._query_filters import (
     reporting_date_col,
 )
 from app.services import loan_schedule, mortgage_service
+from app.services.category_side import get_category_sides, totals_by_side
 from app.services.credit_card_service import (
     apply_effective_date,
     cc_cycle_bill_due_dates,
@@ -1201,21 +1202,28 @@ async def get_account_summary(
     netted_now = max(0.0, paid_now - prior_debt)
     netted_total = max(0.0, paid_now + paid_later - prior_debt)
 
-    # Income = SUM of credit transactions in window (excluding opening_balance
-    # and paired transfers).
-    income_result = await session.execute(
-        _scope(select(func.coalesce(func.sum(effective_amount), 0)).where(
-            Transaction.account_id == account_id,
-            Transaction.type == "credit",
-            Transaction.source != "opening_balance",
-            bucket_date <= today,
-            Transaction.status == "posted",
-            summary_filter,
-        ))
-    )
-    monthly_income = float(income_result.scalar())
+    # Income and expenses net refunds against their category (see
+    # category_side). A credit card is different: the bill nets every credit
+    # against its debits below, so a card reports no income of its own.
+    sides = await get_category_sides(session, account.workspace_id)
 
-    # Expenses = SUM of debit transactions in window (same exclusions).
+    async def _sum_by_category(*conditions) -> list[tuple[uuid.UUID | None, str, float]]:
+        """Sum the window's rows per (category, type) for the given conditions."""
+        rows = await session.execute(
+            _scope(select(
+                Transaction.category_id,
+                Transaction.type,
+                func.coalesce(func.sum(func.abs(effective_amount)), 0),
+            ).where(
+                Transaction.account_id == account_id,
+                summary_filter,
+                *conditions,
+            ).group_by(Transaction.category_id, Transaction.type))
+        )
+        return [(cat_id, tx_type, float(total)) for cat_id, tx_type, total in rows.all()]
+
+    # Income = credits in window (excluding opening_balance and paired
+    # transfers); expenses = debits (same exclusions).
     # For credit-card accounts, NET refund credits against debits so the
     # cycle's "Total da fatura" matches the bank's bill (refunds reduce
     # the invoice amount). Paired transfers are dropped by `transfer_pair_id`
@@ -1237,17 +1245,23 @@ async def get_account_summary(
                 summary_filter,
             ))
         )
+        monthly_income = 0.0
+        monthly_expenses = float(expenses_result.scalar())
     else:
-        expenses_result = await session.execute(
-            _scope(select(func.coalesce(func.sum(func.abs(effective_amount)), 0)).where(
-                Transaction.account_id == account_id,
+        monthly_income, monthly_expenses = totals_by_side(
+            sides,
+            await _sum_by_category(
+                Transaction.type == "credit",
+                Transaction.source != "opening_balance",
+                bucket_date <= today,
+                Transaction.status == "posted",
+            ) + await _sum_by_category(
                 Transaction.type == "debit",
                 bucket_date <= today,
                 Transaction.status == "posted",
-                summary_filter,
-            ))
+            ),
         )
-    monthly_expenses = float(expenses_result.scalar()) - netted_now
+    monthly_expenses -= netted_now
 
     # Forecast values use the same cycle/date scope as the actual totals, but
     # include every pending row and every row bucketed after today. The current
@@ -1258,17 +1272,6 @@ async def get_account_summary(
         Transaction.status == "pending",
         bucket_date > today,
     )
-    forecast_income_result = await session.execute(
-        _scope(select(func.coalesce(func.sum(effective_amount), 0)).where(
-            Transaction.account_id == account_id,
-            Transaction.type == "credit",
-            Transaction.source != "opening_balance",
-            forecast_condition,
-            summary_filter,
-        ))
-    )
-    forecast_income = float(forecast_income_result.scalar() or 0)
-
     if account.type == "credit_card":
         forecast_expense_result = await session.execute(
             _scope(select(func.coalesce(func.sum(signed_for_bill), 0)).where(
@@ -1278,18 +1281,21 @@ async def get_account_summary(
                 summary_filter,
             ))
         )
+        forecast_income = 0.0
+        forecast_expenses = float(forecast_expense_result.scalar() or 0)
     else:
-        forecast_expense_result = await session.execute(
-            _scope(select(func.coalesce(func.sum(func.abs(effective_amount)), 0)).where(
-                Transaction.account_id == account_id,
+        forecast_income, forecast_expenses = totals_by_side(
+            sides,
+            await _sum_by_category(
+                Transaction.type == "credit",
+                Transaction.source != "opening_balance",
+                forecast_condition,
+            ) + await _sum_by_category(
                 Transaction.type == "debit",
                 forecast_condition,
-                summary_filter,
-            ))
+            ),
         )
-    forecast_expenses = float(forecast_expense_result.scalar() or 0) - (
-        netted_total - netted_now
-    )
+    forecast_expenses -= netted_total - netted_now
 
     opening_balance = (
         await get_period_opening_balance(session, account, date_from)
