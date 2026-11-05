@@ -2217,7 +2217,19 @@
     "range30d": "30D",
     "customRange": "Произвольный диапазон",
     "pickCustomRange": "Выберите дату начала и конца",
-    "loadError": "Не удалось загрузить отчёт"
+    "loadError": "Не удалось загрузить отчёт",
+    "incomeStatement": "Отчёт о прибылях и убытках",
+    "incomeStatementTitle": "Отчёт о прибылях и убытках",
+    "statementIncome": "Доходы",
+    "statementExpenses": "(−) Расходы",
+    "statementResult": "= Результат",
+    "statementInvestments": "(−) Инвестиции",
+    "statementNetResult": "= Чистый результат",
+    "statementSavingsRate": "Норма сбережений",
+    "statementTotal": "Итого",
+    "statementShare": "% от доходов",
+    "exportCsv": "Экспорт в CSV",
+    "noGroup": "Без группы"
   },
   "payees": {
     "noPayeeFound": "Получатель не найден.",

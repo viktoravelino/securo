@@ -796,3 +796,64 @@ describe('Reports page, cash-flow bars end at net flow (issue #1241)', () => {
     expect(screen.queryByTestId('cash-flow-net')).not.toBeInTheDocument()
   })
 })
+
+describe('Reports page, income statement tab', () => {
+  const item = (
+    key: string,
+    group: 'income' | 'expenses',
+    value: number,
+    groupId: string,
+    groupName: string,
+  ) => ({ key, label: key, value, color: '#888', group, group_id: groupId, group_name: groupName, group_color: '#444' })
+
+  const statementReport = (): ReportResponse => {
+    const composition = [
+      item('Salary', 'income', 1000, 'work', 'Work Income'),
+      item('Rent', 'expenses', 400, 'housing', 'Housing'),
+      item('Groceries', 'expenses', 200, 'food', 'Food'),
+    ]
+    return {
+      ...emptyReport('income_expenses'),
+      trend: ['2026-07', '2026-08'].map((date) => ({ date, value: 0, breakdowns: {}, change: null, composition })),
+    }
+  }
+
+  it('shows the statement and expands a group', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(statementReport())
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: t('reports.incomeStatement') }))
+
+    const table = await screen.findByTestId('income-statement-table')
+    expect(within(table).getByText(t('reports.statementIncome'))).toBeInTheDocument()
+    expect(within(table).getByText(t('reports.statementExpenses'))).toBeInTheDocument()
+    expect(within(table).getByText(t('reports.statementResult'))).toBeInTheDocument()
+    expect(within(table).getByText('Housing')).toBeInTheDocument()
+    expect(within(table).queryByText('Rent')).not.toBeInTheDocument()
+
+    const housing = within(table).getByRole('button', { name: 'Housing' })
+    expect(housing).toHaveAttribute('aria-expanded', 'false')
+    housing.focus()
+    await user.keyboard('{Enter}')
+    expect(housing).toHaveAttribute('aria-expanded', 'true')
+    expect(within(table).getByText('Rent')).toBeInTheDocument()
+    await user.click(housing)
+    expect(housing).toHaveAttribute('aria-expanded', 'false')
+    await user.click(housing)
+  })
+
+  it('asks for explicit dates, so the statement shows actuals only', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(statementReport())
+    const { user } = renderWithProviders(<ReportsPage />)
+    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
+    // 1Y at offset 0 sends no dates on this tab.
+    expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(5, 7)).toEqual([undefined, undefined])
+
+    await user.click(screen.getByRole('button', { name: t('reports.incomeStatement') }))
+    await waitFor(() => {
+      const [start, end] = api.reports.incomeExpenses.mock.calls.at(-1)?.slice(5, 7) ?? []
+      expect(start).toMatch(/^\d{4}-\d{2}-01$/)
+      expect(end).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    })
+  })
+})

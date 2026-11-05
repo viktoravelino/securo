@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import String, select, desc, func, case, or_
+from sqlalchemy import String, and_, select, desc, func, case, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.app_clock import app_today
@@ -14,6 +14,7 @@ from app.models.asset import ASSET_PRICE_DECIMALS, Asset
 from app.models.asset_value import AssetValue
 from app.models.transaction import Transaction
 from app.models.category import Category
+from app.models.category_group import CategoryGroup
 from app.models.user import User
 from app.services._query_filters import (
     counts_as_pnl,
@@ -58,6 +59,28 @@ _ASSET_TYPE_COLORS: dict[str, str] = {
     "valuable": "#F59E0B",
     "investment": "#8B5CF6",
     "other": "#6B7280",
+}
+
+
+def _group_fields(group_id, group_name, group_color) -> dict:
+    """Return the category-group keys that composition entries carry."""
+    return {
+        "group_id": str(group_id) if group_id else None,
+        "group_name": group_name,
+        "group_color": group_color,
+    }
+
+
+def _info_group_fields(info: dict) -> dict:
+    """Copy the category-group keys from a cache or map entry."""
+    return {k: info.get(k) for k in ("group_id", "group_name", "group_color")}
+
+
+# Fallback cache entry for uncategorized projections.
+_UNCATEGORIZED_INFO = {
+    "label": "Uncategorized",
+    "color": "#6B7280",
+    **_group_fields(None, None, None),
 }
 
 
@@ -951,6 +974,48 @@ async def get_income_expenses_report(
             "value": amount,
         }
 
+    # Per-period investments, for trend[].composition. Same filters as above.
+    inv_trend_result = await session.execute(
+        select(
+            label_expr,
+            Category.id,
+            Category.name,
+            Category.color,
+            CategoryGroup.id,
+            CategoryGroup.name,
+            CategoryGroup.color,
+            func.sum(amount_expr),
+        )
+        .select_from(Transaction)
+        .join(Category, Transaction.category_id == Category.id)
+        .outerjoin(
+            CategoryGroup,
+            and_(
+                Category.group_id == CategoryGroup.id,
+                CategoryGroup.workspace_id == workspace_id,
+            ),
+        )
+        .where(
+            Transaction.workspace_id == workspace_id,
+            report_date >= start,
+            report_date <= axis_end,
+            Transaction.source != "opening_balance",
+            Transaction.type == "debit",
+            Transaction.status == "posted",
+            Transaction.transfer_pair_id.is_(None),
+            Transaction.is_ignored.is_(False),
+            Transaction.exclude_from_pnl.is_(False),
+            Category.treat_as_transfer.is_(True),
+            Category.is_ignored.is_(False),
+            *acct_filter,
+        )
+        .group_by(
+            label_expr, Category.id, Category.name, Category.color,
+            CategoryGroup.id, CategoryGroup.name, CategoryGroup.color,
+        )
+    )
+    inv_trend_rows = inv_trend_result.all()
+
     # Build per-category trend (sparklines) for the full date range
     cat_trend_result = await session.execute(
         select(
@@ -958,11 +1023,21 @@ async def get_income_expenses_report(
             Category.id,
             Category.name,
             Category.color,
+            CategoryGroup.id,
+            CategoryGroup.name,
+            CategoryGroup.color,
             Transaction.type,
             func.sum(amount_expr),
         )
         .select_from(Transaction)
         .outerjoin(Category, Transaction.category_id == Category.id)
+        .outerjoin(
+            CategoryGroup,
+            and_(
+                Category.group_id == CategoryGroup.id,
+                CategoryGroup.workspace_id == workspace_id,
+            ),
+        )
         .where(
             Transaction.workspace_id == workspace_id,
             report_date >= start,
@@ -972,13 +1047,20 @@ async def get_income_expenses_report(
             counts_as_user_pnl(),
             *acct_filter,
         )
-        .group_by(label_expr, Category.id, Category.name, Category.color, Transaction.type)
+        .group_by(
+            label_expr, Category.id, Category.name, Category.color,
+            CategoryGroup.id, CategoryGroup.name, CategoryGroup.color,
+            Transaction.type,
+        )
     )
 
     # Collect into dict[(cat_key, group)] -> {label, color, total, periods}
     cat_trend_map: dict[tuple[str, str], dict] = {}
     for row in cat_trend_result.all():
-        period_label, cat_id, cat_name, cat_color, txn_type, total_amount = row
+        (
+            period_label, cat_id, cat_name, cat_color,
+            grp_id, grp_name, grp_color, txn_type, total_amount,
+        ) = row
         amount = abs(float(total_amount or 0))
         if amount <= 0:
             continue
@@ -991,6 +1073,7 @@ async def get_income_expenses_report(
                 "color": cat_color if cat_color else "#6B7280",
                 "total": 0.0,
                 "periods": {},
+                **_group_fields(grp_id, grp_name, grp_color),
             }
         cat_trend_map[map_key]["total"] += amount
         cat_trend_map[map_key]["periods"][period_label] = (
@@ -1056,16 +1139,27 @@ async def get_income_expenses_report(
             # Fetch category info if needed
             if cat_id_str != "uncategorized" and cat_id_str not in cat_cache:
                 cat_row = await session.execute(
-                    select(Category.name, Category.color)
+                    select(
+                        Category.name, Category.color,
+                        CategoryGroup.id, CategoryGroup.name, CategoryGroup.color,
+                    )
+                    .outerjoin(
+                        CategoryGroup,
+                        and_(
+                            Category.group_id == CategoryGroup.id,
+                            CategoryGroup.workspace_id == workspace_id,
+                        ),
+                    )
                     .where(Category.id == proj["category_id"])
                 )
                 row = cat_row.one_or_none()
                 cat_cache[cat_id_str] = {
                     "label": row[0] if row else "Uncategorized",
                     "color": row[1] if row else "#6B7280",
+                    **(_group_fields(*row[2:]) if row else _group_fields(None, None, None)),
                 }
 
-            info = cat_cache.get(cat_id_str, {"label": "Uncategorized", "color": "#6B7280"})
+            info = cat_cache.get(cat_id_str, _UNCATEGORIZED_INFO)
 
             # Convert projection amount to primary currency
             converted, _ = await fx_convert(
@@ -1091,6 +1185,7 @@ async def get_income_expenses_report(
                     "color": info["color"],
                     "total": 0.0,
                     "periods": {},
+                    **_info_group_fields(info),
                 }
             cat_trend_map[comp_key]["total"] += proj_amount
             cat_trend_map[comp_key]["periods"][period_label] = (
@@ -1117,16 +1212,26 @@ async def get_income_expenses_report(
             forecast_period_label = _format_date_label(tx_report_date, interval)
             if cat_id_str != "uncategorized" and cat_id_str not in cat_cache:
                 cat_row = await session.execute(
-                    select(Category.name, Category.color).where(Category.id == tx.category_id)
+                    select(
+                        Category.name, Category.color,
+                        CategoryGroup.id, CategoryGroup.name, CategoryGroup.color,
+                    )
+                    .outerjoin(
+                        CategoryGroup,
+                        and_(
+                            Category.group_id == CategoryGroup.id,
+                            CategoryGroup.workspace_id == workspace_id,
+                        ),
+                    )
+                    .where(Category.id == tx.category_id)
                 )
                 row = cat_row.one_or_none()
                 cat_cache[cat_id_str] = {
                     "label": row[0] if row else "Uncategorized",
                     "color": row[1] if row else "#6B7280",
+                    **(_group_fields(*row[2:]) if row else _group_fields(None, None, None)),
                 }
-            info = cat_cache.get(
-                cat_id_str, {"label": "Uncategorized", "color": "#6B7280"}
-            )
+            info = cat_cache.get(cat_id_str, _UNCATEGORIZED_INFO)
             if tx.amount_primary is not None:
                 forecast_amount = abs(float(tx.amount_primary))
             else:
@@ -1150,6 +1255,7 @@ async def get_income_expenses_report(
                     "color": info["color"],
                     "total": 0.0,
                     "periods": {},
+                    **_info_group_fields(info),
                 }
             cat_trend_map[comp_key]["total"] += forecast_amount
             cat_trend_map[comp_key]["periods"][forecast_period_label] = (
@@ -1241,6 +1347,25 @@ async def get_income_expenses_report(
                     value=round(v, 2),
                     color=info["color"],
                     group=group,
+                    **_info_group_fields(info),
+                ))
+    # Investments live only in the trend composition, not in category_trend.
+    for (
+        period_label, cat_id, cat_name, cat_color,
+        grp_id, grp_name, grp_color, total_amount,
+    ) in inv_trend_rows:
+        amount = abs(float(total_amount or 0))
+        if amount <= 0:
+            continue
+        for dp in trend:
+            if dp.date == period_label:
+                dp.composition.append(ReportCompositionItem(
+                    key=str(cat_id),
+                    label=cat_name or "Investments",
+                    value=round(amount, 2),
+                    color=cat_color or "#0EA5E9",
+                    group="investments",
+                    **_group_fields(grp_id, grp_name, grp_color),
                 ))
 
     return ReportResponse(

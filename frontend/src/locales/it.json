@@ -2204,7 +2204,19 @@
     "range30d": "30D",
     "customRange": "Intervallo personalizzato",
     "pickCustomRange": "Scegli una data di inizio e fine",
-    "loadError": "Impossibile caricare il report"
+    "loadError": "Impossibile caricare il report",
+    "incomeStatement": "Conto economico",
+    "incomeStatementTitle": "Conto economico",
+    "statementIncome": "Entrate",
+    "statementExpenses": "(−) Spese",
+    "statementResult": "= Risultato",
+    "statementInvestments": "(−) Investimenti",
+    "statementNetResult": "= Risultato netto",
+    "statementSavingsRate": "Tasso di risparmio",
+    "statementTotal": "Totale",
+    "statementShare": "% delle entrate",
+    "exportCsv": "Esporta CSV",
+    "noGroup": "Nessun gruppo"
   },
   "payees": {
     "noPayeeFound": "Nessun beneficiario trovato.",

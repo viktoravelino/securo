@@ -2204,7 +2204,19 @@
     "range30d": "30D",
     "customRange": "Rango personalizado",
     "pickCustomRange": "Elige una fecha de inicio y fin",
-    "loadError": "No se pudo cargar el informe"
+    "loadError": "No se pudo cargar el informe",
+    "incomeStatement": "Estado de resultados",
+    "incomeStatementTitle": "Estado de resultados",
+    "statementIncome": "Ingresos",
+    "statementExpenses": "(−) Gastos",
+    "statementResult": "= Resultado",
+    "statementInvestments": "(−) Inversiones",
+    "statementNetResult": "= Resultado neto",
+    "statementSavingsRate": "Tasa de ahorro",
+    "statementTotal": "Total",
+    "statementShare": "% de ingresos",
+    "exportCsv": "Exportar CSV",
+    "noGroup": "Sin grupo"
   },
   "payees": {
     "noPayeeFound": "No se encontró ningún beneficiario.",

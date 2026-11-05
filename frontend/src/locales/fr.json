@@ -2204,7 +2204,19 @@
     "range30d": "30J",
     "customRange": "Plage personnalisée",
     "pickCustomRange": "Choisir une date de début et de fin",
-    "loadError": "Échec du chargement du rapport"
+    "loadError": "Échec du chargement du rapport",
+    "incomeStatement": "Compte de résultat",
+    "incomeStatementTitle": "Compte de résultat",
+    "statementIncome": "Revenus",
+    "statementExpenses": "(−) Dépenses",
+    "statementResult": "= Résultat",
+    "statementInvestments": "(−) Investissements",
+    "statementNetResult": "= Résultat net",
+    "statementSavingsRate": "Taux d'épargne",
+    "statementTotal": "Total",
+    "statementShare": "% des revenus",
+    "exportCsv": "Exporter en CSV",
+    "noGroup": "Sans groupe"
   },
   "payees": {
     "noPayeeFound": "Aucun bénéficiaire trouvé.",

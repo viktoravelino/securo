@@ -2316,7 +2316,19 @@
     "range30d": "30D",
     "customRange": "Vlastný rozsah",
     "pickCustomRange": "Vyberte dátum začiatku a konca",
-    "loadError": "Nepodarilo sa načítať prehľad"
+    "loadError": "Nepodarilo sa načítať prehľad",
+    "incomeStatement": "Výkaz ziskov a strát",
+    "incomeStatementTitle": "Výkaz ziskov a strát",
+    "statementIncome": "Príjmy",
+    "statementExpenses": "(−) Výdavky",
+    "statementResult": "= Výsledok",
+    "statementInvestments": "(−) Investície",
+    "statementNetResult": "= Čistý výsledok",
+    "statementSavingsRate": "Miera úspor",
+    "statementTotal": "Spolu",
+    "statementShare": "% príjmov",
+    "exportCsv": "Exportovať CSV",
+    "noGroup": "Bez skupiny"
   },
   "payees": {
     "noPayeeFound": "Príjemca sa nenašiel.",

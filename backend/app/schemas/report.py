@@ -28,6 +28,9 @@ class ReportCompositionItem(BaseModel):
     value: float
     color: str
     group: str
+    group_id: str | None = None
+    group_name: str | None = None
+    group_color: str | None = None
 
 
 class ReportDataPoint(BaseModel):

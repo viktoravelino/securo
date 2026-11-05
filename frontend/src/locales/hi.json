@@ -2200,7 +2200,19 @@
     "range30d": "30D",
     "customRange": "कस्टम सीमा",
     "pickCustomRange": "प्रारंभ और समाप्ति तिथि चुनें",
-    "loadError": "रिपोर्ट लोड करने में विफल"
+    "loadError": "रिपोर्ट लोड करने में विफल",
+    "incomeStatement": "आय विवरण",
+    "incomeStatementTitle": "आय विवरण",
+    "statementIncome": "आय",
+    "statementExpenses": "(−) खर्च",
+    "statementResult": "= परिणाम",
+    "statementInvestments": "(−) निवेश",
+    "statementNetResult": "= शुद्ध परिणाम",
+    "statementSavingsRate": "बचत दर",
+    "statementTotal": "कुल",
+    "statementShare": "आय का %",
+    "exportCsv": "CSV निर्यात करें",
+    "noGroup": "कोई समूह नहीं"
   },
   "payees": {
     "noPayeeFound": "कोई प्राप्तकर्ता नहीं मिला।",

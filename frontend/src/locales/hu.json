@@ -2200,7 +2200,19 @@
     "range30d": "30 nap",
     "customRange": "Egyéni időszak",
     "pickCustomRange": "Válassz kezdő és záró dátumot",
-    "loadError": "Nem sikerült betölteni a jelentést"
+    "loadError": "Nem sikerült betölteni a jelentést",
+    "incomeStatement": "Eredménykimutatás",
+    "incomeStatementTitle": "Eredménykimutatás",
+    "statementIncome": "Bevételek",
+    "statementExpenses": "(−) Kiadások",
+    "statementResult": "= Eredmény",
+    "statementInvestments": "(−) Befektetések",
+    "statementNetResult": "= Nettó eredmény",
+    "statementSavingsRate": "Megtakarítási ráta",
+    "statementTotal": "Összesen",
+    "statementShare": "A bevétel %-a",
+    "exportCsv": "CSV exportálása",
+    "noGroup": "Nincs csoport"
   },
   "payees": {
     "noPayeeFound": "Nincs ilyen partner.",

@@ -24,6 +24,7 @@ from app.models.asset import Asset
 from app.models.asset_value import AssetValue
 from app.models.bank_connection import BankConnection
 from app.models.category import Category
+from app.models.category_group import CategoryGroup
 from app.models.recurring_transaction import RecurringTransaction
 from app.models.transaction import Transaction
 from app.services.report_service import (
@@ -127,10 +128,11 @@ async def _add_txn(
 
 async def _make_category(
     session: AsyncSession, user_id: uuid.UUID, name: str, color: str = "#123456",
+    group_id: uuid.UUID | None = None,
 ) -> Category:
     cat = Category(
         id=uuid.uuid4(), user_id=user_id, name=name, icon="tag",
-        color=color, is_system=False,
+        color=color, is_system=False, group_id=group_id,
     )
     session.add(cat)
     await session.commit()
@@ -961,3 +963,62 @@ async def test_custom_income_expenses_only_include_in_range_actuals(
     }
     for item in report.category_trend:
         assert sum(point.value for point in item.series) == item.total
+
+
+async def test_income_expenses_trend_composition_carries_category_group(
+    session, test_user, test_workspace
+):
+    """Per-period composition items carry the category group; others have None."""
+    group = CategoryGroup(
+        id=uuid.uuid4(), user_id=test_user.id, name="Essentials", color="#112233",
+    )
+    session.add(group)
+    await session.commit()
+    grouped = await _make_category(session, test_user.id, "Grouped", group_id=group.id)
+    projected = await _make_category(session, test_user.id, "Projected", group_id=group.id)
+    plain = await _make_category(session, test_user.id, "Plain")
+    acct = await _make_account(session, test_user.id, "IE Group")
+    today = date.today()
+    await _add_txn(session, test_user.id, acct.id, 100, "debit", today, category_id=grouped.id)
+    await _add_txn(session, test_user.id, acct.id, 50, "debit", today, category_id=plain.id)
+    await _add_txn(session, test_user.id, acct.id, 25, "debit", today)
+    # Only a recurring rule for this category, so it takes the cat_cache path.
+    await _make_recurring(
+        session, test_user.id, acct.id, 80, "debit",
+        frequency="monthly", next_occurrence=today.replace(day=1),
+        category_id=projected.id,
+    )
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=2, interval="monthly"
+    )
+
+    found = {
+        c.label: (c.group_id, c.group_name, c.group_color)
+        for c in report.trend[-1].composition
+    }
+    expected = (str(group.id), "Essentials", "#112233")
+    assert found["Grouped"] == expected
+    assert found["Projected"] == expected
+    assert found["Plain"] == (None, None, None)
+    assert found["Uncategorized"] == (None, None, None)
+
+
+async def test_income_expenses_trend_composition_includes_investments(
+    session, test_user, test_workspace
+):
+    """Per-period composition carries investments; category_trend does not."""
+    invest = await _make_category(session, test_user.id, "Invest Cat")
+    invest.treat_as_transfer = True
+    await session.commit()
+    acct = await _make_account(session, test_user.id, "IE Invest")
+    today = date.today()
+    await _add_txn(session, test_user.id, acct.id, 350, "debit", today, category_id=invest.id)
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=2, interval="monthly"
+    )
+    point = next(p for p in report.trend if p.date == today.strftime("%Y-%m"))
+    items = [c for c in point.composition if c.group == "investments"]
+    assert [(c.key, c.value) for c in items] == [(str(invest.id), pytest.approx(350.0))]
+    assert str(invest.id) not in {c.key for c in report.category_trend}

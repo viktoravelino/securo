@@ -2201,7 +2201,19 @@
     "range30d": "30T",
     "customRange": "Benutzerdefinierter Zeitraum",
     "pickCustomRange": "Start- und Enddatum wählen",
-    "loadError": "Bericht konnte nicht geladen werden"
+    "loadError": "Bericht konnte nicht geladen werden",
+    "incomeStatement": "Gewinn- und Verlustrechnung",
+    "incomeStatementTitle": "Gewinn- und Verlustrechnung",
+    "statementIncome": "Einnahmen",
+    "statementExpenses": "(−) Ausgaben",
+    "statementResult": "= Ergebnis",
+    "statementInvestments": "(−) Investitionen",
+    "statementNetResult": "= Nettoergebnis",
+    "statementSavingsRate": "Sparquote",
+    "statementTotal": "Gesamt",
+    "statementShare": "% der Einnahmen",
+    "exportCsv": "CSV exportieren",
+    "noGroup": "Keine Gruppe"
   },
   "payees": {
     "noPayeeFound": "Kein Zahlungsempfänger gefunden.",

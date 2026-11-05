@@ -2256,7 +2256,19 @@
     "range30d": "30Η",
     "customRange": "Προσαρμοσμένο εύρος",
     "pickCustomRange": "Επιλέξτε ημερομηνία έναρξης και λήξης",
-    "loadError": "Αποτυχία φόρτωσης αναφοράς"
+    "loadError": "Αποτυχία φόρτωσης αναφοράς",
+    "incomeStatement": "Κατάσταση αποτελεσμάτων",
+    "incomeStatementTitle": "Κατάσταση αποτελεσμάτων",
+    "statementIncome": "Έσοδα",
+    "statementExpenses": "(−) Έξοδα",
+    "statementResult": "= Αποτέλεσμα",
+    "statementInvestments": "(−) Επενδύσεις",
+    "statementNetResult": "= Καθαρό αποτέλεσμα",
+    "statementSavingsRate": "Ποσοστό αποταμίευσης",
+    "statementTotal": "Σύνολο",
+    "statementShare": "% των εσόδων",
+    "exportCsv": "Εξαγωγή CSV",
+    "noGroup": "Χωρίς ομάδα"
   },
   "fiscal": {
     "kind": {

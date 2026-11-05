@@ -2200,7 +2200,19 @@
     "range30d": "30D",
     "customRange": "Custom range",
     "pickCustomRange": "Pick a start and end date",
-    "loadError": "Failed to load report"
+    "loadError": "Failed to load report",
+    "incomeStatement": "Income Statement",
+    "incomeStatementTitle": "Income statement",
+    "statementIncome": "Revenue",
+    "statementExpenses": "(−) Expenses",
+    "statementResult": "= Result",
+    "statementInvestments": "(−) Investments",
+    "statementNetResult": "= Net result",
+    "statementSavingsRate": "Savings rate",
+    "statementTotal": "Total",
+    "statementShare": "% of revenue",
+    "exportCsv": "Export CSV",
+    "noGroup": "No group"
   },
   "payees": {
     "noPayeeFound": "No payee found.",

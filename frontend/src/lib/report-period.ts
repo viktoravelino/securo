@@ -174,3 +174,27 @@ export function periodWindow(
     }
   }
 }
+
+/**
+ * Explicit window for a preset at offset 0, ending today. Unlike `periodWindow`
+ * it never returns null for a preset: rolling, days and ytd get the dates the
+ * API would derive. Custom (the page already sends the picked dates) returns null.
+ */
+export function currentWindow(preset: PeriodPreset, today: string): PeriodWindow | null {
+  const stepped = periodWindow(preset, today, 0)
+  if (stepped) return stepped
+  switch (preset.kind) {
+    case 'rolling':
+      return { from: rollingStart(today, preset.months), to: today }
+    case 'days':
+      return { from: addDaysIso(today, -(preset.days - 1)), to: today }
+    case 'ytd': {
+      const fy = preset.fyStartMonth ?? 1
+      const t = parseIso(today)
+      return { from: iso(t.y - (t.m < fy ? 1 : 0), fy, 1), to: today }
+    }
+    case 'custom':
+    case 'month':
+      return null
+  }
+}

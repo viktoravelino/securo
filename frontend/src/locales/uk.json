@@ -2217,7 +2217,19 @@
     "range30d": "30Д",
     "customRange": "Довільний діапазон",
     "pickCustomRange": "Виберіть дату початку та кінця",
-    "loadError": "Не вдалося завантажити звіт"
+    "loadError": "Не вдалося завантажити звіт",
+    "incomeStatement": "Звіт про доходи та витрати",
+    "incomeStatementTitle": "Звіт про доходи та витрати",
+    "statementIncome": "Доходи",
+    "statementExpenses": "(−) Витрати",
+    "statementResult": "= Результат",
+    "statementInvestments": "(−) Інвестиції",
+    "statementNetResult": "= Чистий результат",
+    "statementSavingsRate": "Норма заощаджень",
+    "statementTotal": "Разом",
+    "statementShare": "% від доходів",
+    "exportCsv": "Експорт у CSV",
+    "noGroup": "Без групи"
   },
   "payees": {
     "noPayeeFound": "Отримувача не знайдено.",

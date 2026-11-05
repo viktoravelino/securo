@@ -2289,7 +2289,19 @@
     "range30d": "30D",
     "customRange": "Zakres niestandardowy",
     "pickCustomRange": "Wybierz datę początkową i końcową",
-    "loadError": "Nie udało się załadować raportu"
+    "loadError": "Nie udało się załadować raportu",
+    "incomeStatement": "Rachunek zysków i strat",
+    "incomeStatementTitle": "Rachunek zysków i strat",
+    "statementIncome": "Przychody",
+    "statementExpenses": "(−) Wydatki",
+    "statementResult": "= Wynik",
+    "statementInvestments": "(−) Inwestycje",
+    "statementNetResult": "= Wynik netto",
+    "statementSavingsRate": "Stopa oszczędności",
+    "statementTotal": "Razem",
+    "statementShare": "% przychodów",
+    "exportCsv": "Eksportuj CSV",
+    "noGroup": "Bez grupy"
   },
   "payees": {
     "noPayeeFound": "Nie znaleziono odbiorcy.",

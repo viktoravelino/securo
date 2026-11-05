@@ -2200,7 +2200,19 @@
     "range30d": "30日",
     "customRange": "期間を指定",
     "pickCustomRange": "開始日と終了日を選択",
-    "loadError": "レポートの読み込みに失敗しました"
+    "loadError": "レポートの読み込みに失敗しました",
+    "incomeStatement": "損益計算書",
+    "incomeStatementTitle": "損益計算書",
+    "statementIncome": "収益",
+    "statementExpenses": "(−) 支出",
+    "statementResult": "= 結果",
+    "statementInvestments": "(−) 投資",
+    "statementNetResult": "= 純結果",
+    "statementSavingsRate": "貯蓄率",
+    "statementTotal": "合計",
+    "statementShare": "収益比 %",
+    "exportCsv": "CSVをエクスポート",
+    "noGroup": "グループなし"
   },
   "payees": {
     "noPayeeFound": "取引相手が見つかりません。",
