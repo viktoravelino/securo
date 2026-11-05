@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select, func, case, or_
+from sqlalchemy import and_, select, func, case, extract, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,22 +14,27 @@ from app.models.bank_connection import BankConnection
 from app.models.transaction import Transaction
 from app.models.category import Category
 from app.models.recurring_transaction import RecurringTransaction
-from app.schemas.dashboard import DashboardSummary, SpendingByCategory, MonthlyTrend, ProjectedTransaction, DailyBalance, BalanceHistory
+from app.schemas.dashboard import DashboardSummary, SpendingByCategory, MonthlyTrend, ProjectedTransaction, DailyBalance, DailyBaseline, BalanceHistory
 from app.services._query_filters import (
     counts_as_user_pnl,
+    forecast_owner_share_fractions,
     owner_split_offset_by_category,
     owner_split_offset_pnl,
     reporting_date_col,
-    signed_share_amount,
     viewer_shared_pnl,
     viewer_shared_spending_by_category,
 )
 from app.services import invoice_forecast_service
+from app.services.category_side import classify, get_category_sides, totals_by_side
 from app.services.admin_service import get_credit_card_accounting_mode
 from app.services.recurring_transaction_service import get_occurrences_in_range
 from app.services.asset_service import get_asset_values_at
 from app.services.fx_rate_service import _resolve_rate, convert
 from app.models.user import User
+
+BASELINE_MONTHS = 12
+BASELINE_MIN_MONTHS = 3
+_TAIL_ANCHOR = 27
 
 
 def _month_range(month: date) -> tuple[date, date]:
@@ -373,10 +378,12 @@ async def get_summary(
     # (whose offset is already in the owner's share, see share-only model).
     # Only posted (settled) transactions count in the actual period totals;
     # pending and future rows are layered into the forecast fields below.
+    sides = await get_category_sides(session, workspace_id)
     monthly_result = await session.execute(
         select(
-            func.sum(case((Transaction.type == "credit", Transaction.amount), else_=0)),
-            func.sum(case((Transaction.type == "debit", Transaction.amount), else_=0)),
+            Transaction.category_id,
+            Transaction.type,
+            func.sum(Transaction.amount),
         )
         .where(
             Transaction.workspace_id == workspace_id,
@@ -388,10 +395,12 @@ async def get_summary(
             counts_as_user_pnl(),
             *acct_filter,
         )
+        .group_by(Transaction.category_id, Transaction.type)
     )
-    monthly_row = monthly_result.one()
-    monthly_income = float(monthly_row[0] or 0)
-    monthly_expenses = float(monthly_row[1] or 0)
+    monthly_income, monthly_expenses = totals_by_side(
+        sides,
+        ((cat_id, tx_type, float(total or 0)) for cat_id, tx_type, total in monthly_result.all()),
+    )
 
     if not filtered:
         # Subtract non-owner shares of the user's own split txs — they paid
@@ -401,7 +410,7 @@ async def get_summary(
             user_id,
             month_start,
             month_end,
-            use_effective_date=False,
+            use_effective_date=accounting_mode == "accrual",
             workspace_id=workspace_id,
         )
         monthly_income -= own_offset_inc
@@ -431,18 +440,28 @@ async def get_summary(
         session, workspace_id, month_start, month_end, account_ids,
         range_date_col=report_date,
     )
-    for proj in projections:
-        if proj["type"] == "credit":
-            projected_monthly_income += proj["amount"]
-        else:
-            projected_monthly_expenses += proj["amount"]
-    for tx in forecast_transactions:
-        if not _counts_as_user_pnl_row(tx):
-            continue
-        if tx.type == "credit":
-            projected_monthly_income += float(tx.amount)
-        else:
-            projected_monthly_expenses += float(tx.amount)
+    # Same share-only rule as the posted totals above, and gated the same way.
+    forecast_fractions = (
+        {} if filtered
+        else await forecast_owner_share_fractions(session, user_id, forecast_transactions)
+    )
+    forecast_income, forecast_expenses = totals_by_side(
+        sides,
+        [
+            (proj["category_id"], proj["type"], proj["amount"])
+            for proj in projections
+        ] + [
+            (
+                tx.category_id,
+                tx.type,
+                float(tx.amount) * float(forecast_fractions.get(tx.id, 1)),
+            )
+            for tx in forecast_transactions
+            if _counts_as_user_pnl_row(tx)
+        ],
+    )
+    projected_monthly_income += forecast_income
+    projected_monthly_expenses += forecast_expenses
 
     # Account count — the active collection's accounts when filtered, else all
     # accounts in this workspace (manual + bank-connected).
@@ -455,16 +474,16 @@ async def get_summary(
             .where(Account.workspace_id == workspace_id)
         ) or 0
 
-    # Pending categorization — exclude opening_balance and transfer pairs
+    # Pending categorization: uncategorized rows that count toward the
+    # user's P/L. That is the same filter the uncategorized list behind the
+    # counter uses (user_pnl_only), so ignored rows, rows excluded from P/L,
+    # transfer pairs and settlement movements stay out of both. Opening
+    # balances are left out too.
     pending_cat_filters = [
         Transaction.workspace_id == workspace_id,
         Transaction.category_id.is_(None),
         Transaction.source != "opening_balance",
-        # Settlement-sourced rows are auto-generated movements (paying
-        # back / receiving back a group debt). They aren't expenses or
-        # income that need a category, so exclude them.
-        Transaction.source != "settlement",
-        Transaction.transfer_pair_id.is_(None),
+        counts_as_user_pnl(),
         *acct_filter,
     ]
     pending_categorization_result = await session.execute(
@@ -518,8 +537,9 @@ async def get_summary(
     # Same posted-only rule as the native-currency totals above.
     primary_result = await session.execute(
         select(
-            func.sum(case((Transaction.type == "credit", Transaction.amount_primary), else_=0)),
-            func.sum(case((Transaction.type == "debit", Transaction.amount_primary), else_=0)),
+            Transaction.category_id,
+            Transaction.type,
+            func.sum(Transaction.amount_primary),
         )
         .where(
             Transaction.workspace_id == workspace_id,
@@ -532,11 +552,17 @@ async def get_summary(
             Transaction.amount_primary.isnot(None),
             *acct_filter,
         )
+        .group_by(Transaction.category_id, Transaction.type)
     )
-    primary_row = primary_result.one()
-    if primary_row[0] is not None or primary_row[1] is not None:
-        monthly_income_primary = float(primary_row[0] or 0)
-        monthly_expenses_primary = float(primary_row[1] or 0)
+    primary_rows = primary_result.all()
+    if primary_rows:
+        monthly_income_primary, monthly_expenses_primary = totals_by_side(
+            sides,
+            [
+                (cat_id, tx_type, abs(float(total or 0)))
+                for cat_id, tx_type, total in primary_rows
+            ],
+        )
 
     if not filtered:
         # Apply share-only offset in primary currency (FX-converted).
@@ -545,7 +571,7 @@ async def get_summary(
             user_id,
             month_start,
             month_end,
-            use_effective_date=False,
+            use_effective_date=accounting_mode == "accrual",
             primary_currency=primary_currency,
             workspace_id=workspace_id,
         )
@@ -571,13 +597,13 @@ async def get_summary(
                 Transaction.currency,
                 func.sum(
                     case(
-                        (Transaction.type == "credit", signed_share_amount()),
+                        (Transaction.type == "credit", TransactionSplit.share_amount),
                         else_=0,
                     )
                 ),
                 func.sum(
                     case(
-                        (Transaction.type == "debit", signed_share_amount()),
+                        (Transaction.type == "debit", TransactionSplit.share_amount),
                         else_=0,
                     )
                 ),
@@ -609,7 +635,7 @@ async def get_summary(
                 debit_pri, _ = await convert(
                     session, Decimal(str(in_debit)), cur, primary_currency
                 )
-                monthly_expenses_primary += float(debit_pri)
+                monthly_expenses_primary += abs(float(debit_pri))
 
     projected_income_primary = monthly_income_primary
     projected_expenses_primary = monthly_expenses_primary
@@ -620,10 +646,11 @@ async def get_summary(
             session, Decimal(str(proj["amount"])),
             proj["currency"], primary_currency,
         )
-        if proj["type"] == "credit":
-            projected_income_primary += float(proj_converted)
-        else:
-            projected_expenses_primary += float(proj_converted)
+        proj_income, proj_expenses = totals_by_side(
+            sides, [(proj["category_id"], proj["type"], float(proj_converted))]
+        )
+        projected_income_primary += proj_income
+        projected_expenses_primary += proj_expenses
     for tx in forecast_transactions:
         if not _counts_as_user_pnl_row(tx):
             continue
@@ -633,10 +660,14 @@ async def get_summary(
             forecast_converted, _ = await convert(
                 session, Decimal(str(tx.amount)), tx.currency, primary_currency,
             )
-        if tx.type == "credit":
-            projected_income_primary += float(forecast_converted)
-        else:
-            projected_expenses_primary += float(forecast_converted)
+        # Magnitude first: the owner's share can be negative, and abs() after
+        # the fraction would flip it.
+        forecast_converted = abs(forecast_converted) * forecast_fractions.get(tx.id, 1)
+        tx_income, tx_expenses = totals_by_side(
+            sides, [(tx.category_id, tx.type, float(forecast_converted))]
+        )
+        projected_income_primary += tx_income
+        projected_expenses_primary += tx_expenses
 
     # Aggregate the user's net pending balance across all groups they
     # participate in. We reuse the group balance computation so partial
@@ -655,14 +686,14 @@ async def get_summary(
         projected_balance=projected_balance,
         projected_balance_primary=round(projected_balance_primary, 2),
         balance_date=cutoff.isoformat(),
-        monthly_income=max(real_monthly_income, 0.0),
-        monthly_expenses=max(real_monthly_expenses, 0.0),
-        monthly_income_primary=round(max(monthly_income_primary, 0.0), 2),
-        monthly_expenses_primary=round(max(monthly_expenses_primary, 0.0), 2),
-        projected_income=max(projected_monthly_income, 0.0),
-        projected_expenses=max(projected_monthly_expenses, 0.0),
-        projected_income_primary=round(max(projected_income_primary, 0.0), 2),
-        projected_expenses_primary=round(max(projected_expenses_primary, 0.0), 2),
+        monthly_income=round(real_monthly_income, 2),
+        monthly_expenses=round(real_monthly_expenses, 2),
+        monthly_income_primary=round(monthly_income_primary, 2),
+        monthly_expenses_primary=round(monthly_expenses_primary, 2),
+        projected_income=round(projected_monthly_income, 2),
+        projected_expenses=round(projected_monthly_expenses, 2),
+        projected_income_primary=round(projected_income_primary, 2),
+        projected_expenses_primary=round(projected_expenses_primary, 2),
         accounts_count=accounts_count,
         pending_categorization=pending_categorization,
         pending_categorization_amount=pending_categorization_amount,
@@ -769,13 +800,13 @@ async def get_spending_by_category(
             Category.name,
             Category.icon,
             Category.color,
+            Transaction.type,
             func.sum(_primary_amount_expr()),
         )
         .select_from(Transaction)
         .outerjoin(Category, Transaction.category_id == Category.id)
         .where(
             Transaction.workspace_id == workspace_id,
-            Transaction.type == "debit",
             report_date >= month_start,
             report_date < month_end,
             report_date <= today,
@@ -784,21 +815,27 @@ async def get_spending_by_category(
             counts_as_user_pnl(),
             *acct_filter,
         )
-        .group_by(Category.id, Category.name, Category.icon, Category.color)
-        .order_by(func.sum(_primary_amount_expr()).desc())
+        .group_by(Category.id, Category.name, Category.icon, Category.color, Transaction.type)
     )
 
-    # Build a dict of category_id -> {name, icon, color, total}
+    # Build a dict of category_id -> {name, icon, color, total}. Refunds
+    # (credits in an expense category) reduce that category's total; income
+    # categories are not spending and stay out.
+    sides = await get_category_sides(session, workspace_id)
     spending_map: dict[str | None, dict] = {}
     for row in result.all():
+        side, signed = classify(sides, row[0], row[4], abs(float(row[5] or 0)))
+        if side != "expenses":
+            continue
         cat_id = str(row[0]) if row[0] else None
-        spending_map[cat_id] = {
+        entry = spending_map.setdefault(cat_id, {
             "name": row[1] or "Sem categoria",
             "icon": row[2] or "circle-help",
             "color": row[3] or "#6B7280",
-            "total": float(row[4] or 0),
+            "total": 0.0,
             "projected": 0.0,
-        }
+        })
+        entry["total"] += signed
 
     # Subtract non-owner shares per category — owner-side splits should
     # contribute only the owner's share, not the full amount.
@@ -866,7 +903,10 @@ async def get_spending_by_category(
     # We need category info for recurring projections — fetch categories
     cat_cache: dict[str, dict] = {}
     for proj in projections:
-        if proj["type"] != "debit":
+        proj_side, proj_signed = classify(
+            sides, proj["category_id"], proj["type"], proj["amount"]
+        )
+        if proj_side != "expenses":
             continue
         cat_id = str(proj["category_id"]) if proj["category_id"] else None
         if cat_id and cat_id not in cat_cache:
@@ -885,7 +925,7 @@ async def get_spending_by_category(
         proj_amount, _ = await convert(
             session, Decimal(str(proj["amount"])), proj["currency"], primary_currency,
         )
-        proj_amount_float = float(proj_amount)
+        proj_amount_float = float(proj_amount) * (1 if proj_signed >= 0 else -1)
 
         if cat_id in spending_map:
             spending_map[cat_id]["projected"] += proj_amount_float
@@ -905,11 +945,18 @@ async def get_spending_by_category(
         session, workspace_id, month_start, month_end, account_ids,
         range_date_col=report_date,
     )
+    forecast_fractions = (
+        {} if filtered
+        else await forecast_owner_share_fractions(session, user_id, forecast_transactions)
+    )
     for tx in forecast_transactions:
-        if tx.type != "debit" or tx.is_ignored:
+        if tx.is_ignored:
             continue
         category = tx.category
         if not _counts_as_user_pnl_row(tx):
+            continue
+        tx_side, tx_signed = classify(sides, tx.category_id, tx.type, 1.0)
+        if tx_side != "expenses":
             continue
         cat_id = str(tx.category_id) if tx.category_id else None
         if cat_id and cat_id not in cat_cache:
@@ -919,15 +966,16 @@ async def get_spending_by_category(
                 "color": category.color if category else "#6B7280",
             }
         if tx.amount_primary is not None:
-            projected_amount = float(tx.amount_primary)
+            projected_amount = float(abs(tx.amount_primary))
         else:
             amount, _ = await convert(
                 session,
-                Decimal(str(tx.amount)),
+                Decimal(str(abs(tx.amount))),
                 tx.currency,
                 primary_currency,
             )
             projected_amount = float(amount)
+        projected_amount *= float(forecast_fractions.get(tx.id, 1)) * tx_signed
         if cat_id in spending_map:
             spending_map[cat_id]["projected"] += projected_amount
         else:
@@ -937,32 +985,25 @@ async def get_spending_by_category(
             )
             spending_map[cat_id] = {**info, "total": 0.0, "projected": projected_amount}
 
-    # `total` is posted-only and the forecast rides along in `projected_total`
-    # (actual + forecast). Totals are signed (a negative debit is a refund that
-    # offsets spending) and each category is clamped at 0 individually, so the
-    # breakdown sums the clamped positive categories and can exceed the
-    # expenses card when refunds net another category below zero (Food 80 +
-    # RefundOnly -50: the card shows 30, the breakdown sums to 80). A category
-    # netting <= 0 once the forecast is included (`projected_total`, which the
-    # widget renders) is omitted, so a pending refund larger than the posted
-    # spend doesn't leave a $0 row.
-    visible = []
-    for cat_id, entry in spending_map.items():
-        projected_total = max(entry["total"] + entry.get("projected", 0.0), 0.0)
-        if projected_total <= 0:
-            continue
-        visible.append((cat_id, entry, max(entry["total"], 0.0), projected_total))
-    grand_total = sum(total for _, _, total, _ in visible)
+    # `total` stays posted-only so the breakdown adds up to the expenses card,
+    # which is also posted-only. The forecast rides along in `projected_total`
+    # (actual + forecast) for callers that want the same split the card shows.
+    grand_total = sum(entry["total"] for entry in spending_map.values())
     spending = []
-    for cat_id, entry, total, projected_total in sorted(visible, key=lambda x: x[2], reverse=True):
+    for cat_id, entry in sorted(spending_map.items(), key=lambda x: x[1]["total"], reverse=True):
+        # A negative owner share can pull the projection below zero. Keep the
+        # category for its posted spending, but never project less than zero.
+        projected_total = entry["total"] + entry.get("projected", 0.0)
+        if projected_total <= 0 and entry["total"] <= 0:
+            continue
         spending.append(SpendingByCategory(
             category_id=cat_id,
             category_name=entry["name"],
             category_icon=entry["icon"],
             category_color=entry["color"],
-            total=total,
-            projected_total=projected_total,
-            percentage=(total / grand_total * 100) if grand_total else 0,
+            total=round(entry["total"], 2),
+            projected_total=round(max(projected_total, 0.0), 2),
+            percentage=(entry["total"] / grand_total * 100) if grand_total else 0,
         ))
 
     return spending
@@ -982,11 +1023,13 @@ async def get_monthly_trend(
     report_date = reporting_date_col(accounting_mode)
     month_label = func.to_char(report_date, 'YYYY-MM').label('month')
     primary_amt = _primary_amount_expr()
+    sides = await get_category_sides(session, workspace_id)
     result = await session.execute(
         select(
             month_label,
-            func.sum(case((Transaction.type == "credit", primary_amt), else_=0)),
-            func.sum(case((Transaction.type == "debit", primary_amt), else_=0)),
+            Transaction.category_id,
+            Transaction.type,
+            func.sum(primary_amt),
         )
         .where(
             Transaction.workspace_id == workspace_id,
@@ -996,17 +1039,17 @@ async def get_monthly_trend(
             counts_as_user_pnl(),
             *acct_filter,
         )
-        .group_by(month_label)
-        .order_by(month_label.desc())
-        .limit(months)
+        .group_by(month_label, Transaction.category_id, Transaction.type)
     )
 
     user = await session.get(User, user_id)
     primary_currency = user.primary_currency if user else get_settings().default_currency
 
     trend_map: dict[str, list[float]] = {}
-    for row in result.all():
-        trend_map[row[0]] = [float(row[1] or 0), float(row[2] or 0)]
+    for month_key, cat_id, tx_type, total in result.all():
+        side, signed = classify(sides, cat_id, tx_type, abs(float(total or 0)))
+        bucket = trend_map.setdefault(month_key, [0.0, 0.0])
+        bucket[0 if side == "income" else 1] += signed
 
     # Keep the dashboard trend's current month useful even when its only
     # activity is still pending or future-dated. Those rows are forecast data,
@@ -1023,6 +1066,10 @@ async def get_monthly_trend(
         session, workspace_id, forecast_start, forecast_end, account_ids,
         range_date_col=report_date,
     )
+    forecast_fractions = (
+        {} if filtered
+        else await forecast_owner_share_fractions(session, user_id, forecast_transactions)
+    )
     for tx in forecast_transactions:
         if not _counts_as_user_pnl_row(tx):
             continue
@@ -1033,16 +1080,15 @@ async def get_monthly_trend(
         month_key = f"{tx_report_date.year:04d}-{tx_report_date.month:02d}"
         bucket = trend_map.setdefault(month_key, [0.0, 0.0])
         if tx.amount_primary is not None:
-            amount = float(tx.amount_primary)
+            amount = abs(float(tx.amount_primary))
         else:
             converted, _ = await convert(
-                session, Decimal(str(tx.amount)), tx.currency, primary_currency,
+                session, Decimal(str(abs(tx.amount))), tx.currency, primary_currency,
             )
-            amount = float(converted)
-        if tx.type == "credit":
-            bucket[0] += amount
-        else:
-            bucket[1] += amount
+            amount = abs(float(converted))
+        amount *= float(forecast_fractions.get(tx.id, 1))
+        side, signed = classify(sides, tx.category_id, tx.type, amount)
+        bucket[0 if side == "income" else 1] += signed
 
     trends_raw = sorted(
         ((month, values[0], values[1]) for month, values in trend_map.items()),
@@ -1078,8 +1124,8 @@ async def get_monthly_trend(
         adjusted.append(
             MonthlyTrend(
                 month=month_str,
-                income=max(0.0, income - own_inc + shared_inc),
-                expenses=max(0.0, expenses - own_exp + shared_exp),
+                income=round(income - own_inc + shared_inc, 2),
+                expenses=round(expenses - own_exp + shared_exp, 2),
             )
         )
 
@@ -1322,7 +1368,7 @@ async def _account_balance_at(
     if account.connection_id:
         # Start from the provider's authoritative current balance
         current_bal = float(account.balance)
-        if account.type == "credit_card":
+        if account.type in {"credit_card", "loan"}:
             current_bal = -current_bal
 
         # The provider number is the source of truth for the current balance,
@@ -1467,7 +1513,7 @@ async def _total_balance_by_currency(
     for account in accounts:
         if account.connection_id:
             bal = float(account.balance)
-            if account.type == "credit_card":
+            if account.type in {"credit_card", "loan"}:
                 bal = -bal
             if cutoff < today:
                 bal -= connected_deltas.get(account.id, 0.0)
@@ -1534,6 +1580,8 @@ async def _daily_balance_deltas_by_date(
     primary_currency_hint: Optional[str] = None,
     account_ids: Optional[list[uuid.UUID]] = None,
     include_pending: bool = False,
+    exclude_opening_balance: bool = False,
+    month_starts: Optional[list[date]] = None,
 ) -> dict[date, float]:
     """Get daily balance deltas for a date range [start, end), keyed by date.
 
@@ -1551,6 +1599,22 @@ async def _daily_balance_deltas_by_date(
         else_=-effective,
     )
     status_filter = [] if include_pending else [Transaction.status == "posted"]
+    if month_starts is not None and not month_starts:
+        return {}
+
+    date_filters = (
+        [
+            or_(*[
+                and_(
+                    Transaction.date >= month_start.replace(day=1),
+                    Transaction.date < _month_range(month_start)[1],
+                )
+                for month_start in month_starts
+            ])
+        ]
+        if month_starts is not None
+        else [Transaction.date >= start, Transaction.date < end]
+    )
     result = await session.execute(
         select(
             Transaction.date,
@@ -1562,11 +1626,11 @@ async def _daily_balance_deltas_by_date(
         .where(
             Transaction.workspace_id == workspace_id,
             Account.is_closed == False,
-            Transaction.date >= start,
-            Transaction.date < end,
+            *date_filters,
             Transaction.date <= app_today(),
             Transaction.is_ignored == False,
             *status_filter,
+            *([Transaction.source != "opening_balance"] if exclude_opening_balance else []),
             or_(
                 Transaction.category_id.is_(None),
                 Category.is_ignored == False,
@@ -1596,6 +1660,7 @@ async def _daily_deltas(
     primary_currency_hint: Optional[str] = None,
     account_ids: Optional[list[uuid.UUID]] = None,
     include_pending: bool = False,
+    exclude_opening_balance: bool = False,
 ) -> dict[int, float]:
     """Get daily balance deltas for a date range [start, end), keyed by day-of-month."""
     by_date = await _daily_balance_deltas_by_date(
@@ -1606,8 +1671,133 @@ async def _daily_deltas(
         primary_currency_hint=primary_currency_hint,
         account_ids=account_ids,
         include_pending=include_pending,
+        exclude_opening_balance=exclude_opening_balance,
     )
     return {tx_date.day: amount for tx_date, amount in by_date.items()}
+
+
+def _baseline_from_deltas(
+    deltas: dict[date, float],
+    month_starts: list[date],
+    target_days: int,
+    today: date,
+) -> list[DailyBaseline]:
+    """Per-day median and P25/P75 of cumulative change across months with data."""
+    by_day: dict[int, list[float]] = {}
+    for month_start in month_starts:
+        month_start = month_start.replace(day=1)
+        month_end = _month_range(month_start)[1]
+        days = (month_end - month_start).days
+        if any(month_start <= d < month_end for d in deltas):
+            cumulative = []
+            running = 0.0
+            for day in range(1, days + 1):
+                running += deltas.get(month_start.replace(day=day), 0.0)
+                cumulative.append(running)
+            for day in range(1, target_days + 1):
+                source_day = _source_day(day, target_days, days)
+                # Days after today have no data yet; don't carry the balance flat.
+                if month_start.replace(day=source_day) > today:
+                    continue
+                by_day.setdefault(day, []).append(cumulative[source_day - 1])
+
+    baseline = []
+    for day in range(1, target_days + 1):
+        values = sorted(by_day.get(day, []))
+        if len(values) < 2:
+            baseline.append(DailyBaseline(day=day))
+            continue
+        baseline.append(DailyBaseline(
+            day=day,
+            median=round(_percentile(values, 0.5), 2),
+            lower_quartile=(
+                round(_percentile(values, 0.25), 2)
+                if len(values) >= BASELINE_MIN_MONTHS else None
+            ),
+            upper_quartile=(
+                round(_percentile(values, 0.75), 2)
+                if len(values) >= BASELINE_MIN_MONTHS else None
+            ),
+        ))
+    return baseline
+
+def _source_day(day: int, target_days: int, source_days: int) -> int:
+    """Map a day of the target month onto a source month of a different length.
+
+    Days up to the anchor match by calendar day; the tail is stretched linearly so
+    the last day always maps to the last day (month-end income lines up).
+    """
+    if day <= _TAIL_ANCHOR or target_days == source_days:
+        return min(day, source_days)
+    frac = (day - _TAIL_ANCHOR) / (target_days - _TAIL_ANCHOR)
+    return min(source_days, round(_TAIL_ANCHOR + frac * (source_days - _TAIL_ANCHOR)))
+
+
+def _percentile(sorted_values: list[float], q: float) -> float:
+    """Linear-interpolated percentile of a non-empty sorted list, q in [0, 1]."""
+    pos = (len(sorted_values) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_values) - 1)
+    return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * (pos - lo)
+
+
+def _months_before(month: date, count: int) -> list[date]:
+    months = []
+    cursor = month.replace(day=1)
+    for _ in range(count):
+        cursor = (cursor - timedelta(days=1)).replace(day=1)
+        months.append(cursor)
+    return list(reversed(months))
+
+
+def _normalize_comparison_months(
+    comparison_months: Optional[list[date]], viewed_month: date
+) -> list[date]:
+    if comparison_months is None:
+        return _months_before(viewed_month, BASELINE_MONTHS)
+    if not comparison_months:
+        raise ValueError("At least one comparison month is required")
+
+    months = sorted({month.replace(day=1) for month in comparison_months})
+    if len(months) > 24:
+        raise ValueError("A maximum of 24 comparison months is allowed")
+    if any(month >= viewed_month for month in months):
+        raise ValueError("Comparison months must be before the viewed month")
+    return months
+
+
+async def get_balance_history_months(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    account_ids: Optional[list[uuid.UUID]] = None,
+) -> list[str]:
+    if account_ids is not None and not account_ids:
+        return []
+
+    tx_year = extract("year", Transaction.date)
+    tx_month = extract("month", Transaction.date)
+    result = await session.execute(
+        select(tx_year, tx_month)
+        .join(Account, Transaction.account_id == Account.id)
+        .outerjoin(Category, Transaction.category_id == Category.id)
+        .where(
+            Transaction.workspace_id == workspace_id,
+            Account.is_closed == False,
+            Account.type != "loan",
+            Transaction.date <= app_today(),
+            Transaction.status == "posted",
+            Transaction.is_ignored == False,
+            Transaction.source != "opening_balance",
+            or_(
+                Transaction.category_id.is_(None),
+                Category.is_ignored == False,
+            ),
+            *([Transaction.account_id.in_(account_ids)] if account_ids is not None else []),
+        )
+        .group_by(tx_year, tx_month)
+        .order_by(tx_year, tx_month)
+    )
+    return [f"{int(year):04d}-{int(month):02d}" for year, month in result.all()]
 
 
 async def get_balance_history(
@@ -1616,20 +1806,20 @@ async def get_balance_history(
     user_id: uuid.UUID,
     month: Optional[date] = None,
     account_ids: Optional[list[uuid.UUID]] = None,
+    comparison_months: Optional[list[date]] = None,
 ) -> BalanceHistory:
     if not month:
         month = app_today().replace(day=1)
 
     month_start, month_end = _month_range(month)
-    prev_month_start = (month_start - timedelta(days=1)).replace(day=1)
-    prev_month_end = month_start
+    selected_comparison_months = _normalize_comparison_months(
+        comparison_months, month_start
+    )
 
     today = app_today()
     is_current = month_start.year == today.year and month_start.month == today.month
     days_in_month = (month_end - month_start).days
     cutoff_day = today.day if is_current else days_in_month
-
-    prev_days_in_month = (prev_month_end - prev_month_start).days
 
     # Look up the user's primary currency once so the helpers can avoid
     # re-querying.
@@ -1655,20 +1845,62 @@ async def get_balance_history(
         session, workspace_id, month_start - timedelta(days=1),
         primary_currency_hint=primary_currency, account_ids=balance_account_ids,
     )
-    prev_start = await _balance_at(
-        session, workspace_id, prev_month_start - timedelta(days=1),
-        primary_currency_hint=primary_currency, account_ids=balance_account_ids,
-    )
 
     # Daily deltas from real transactions
     current_deltas = await _daily_deltas(
         session, workspace_id, month_start, month_end,
         primary_currency_hint=primary_currency, account_ids=balance_account_ids,
+        exclude_opening_balance=True,
     )
-    prev_deltas = await _daily_deltas(
-        session, workspace_id, prev_month_start, prev_month_end,
-        primary_currency_hint=primary_currency, account_ids=balance_account_ids,
-    )
+
+    comparison = None
+    comparison_month = None
+    comparison_opening_balance = None
+    baseline: list[DailyBaseline] = []
+    if len(selected_comparison_months) == 1:
+        comparison_month = selected_comparison_months[0]
+        comparison_start, comparison_end = _month_range(comparison_month)
+        comparison_opening_balance = await _balance_at(
+            session,
+            workspace_id,
+            comparison_start - timedelta(days=1),
+            primary_currency_hint=primary_currency,
+            account_ids=balance_account_ids,
+        )
+        comparison_deltas = await _daily_deltas(
+            session,
+            workspace_id,
+            comparison_start,
+            comparison_end,
+            primary_currency_hint=primary_currency,
+            account_ids=balance_account_ids,
+            exclude_opening_balance=True,
+        )
+        if comparison_deltas:
+            comparison = []
+            comparison_balance = comparison_opening_balance
+            comparison_days = (comparison_end - comparison_start).days
+            for day in range(1, comparison_days + 1):
+                comparison_balance += comparison_deltas.get(day, 0.0)
+                is_future = comparison_start.replace(day=day) > today
+                comparison.append(DailyBalance(
+                    day=day,
+                    balance=None if is_future else round(comparison_balance, 2),
+                ))
+    else:
+        baseline_deltas = await _daily_balance_deltas_by_date(
+            session,
+            workspace_id,
+            selected_comparison_months[0],
+            _month_range(selected_comparison_months[-1])[1],
+            primary_currency_hint=primary_currency,
+            account_ids=balance_account_ids,
+            exclude_opening_balance=True,
+            month_starts=selected_comparison_months,
+        )
+        baseline = _baseline_from_deltas(
+            baseline_deltas, selected_comparison_months, days_in_month, today
+        )
 
     # Recurring projections for future days of current month (converted to primary currency)
     proj_deltas: dict[int, float] = {}
@@ -1737,11 +1969,16 @@ async def get_balance_history(
             balance=round(balance, 2) if day <= cutoff_day else None,
         ))
 
-    # Build previous month daily balances
-    prev_daily = []
-    balance = prev_start
-    for day in range(1, prev_days_in_month + 1):
-        balance += prev_deltas.get(day, 0)
-        prev_daily.append(DailyBalance(day=day, balance=round(balance, 2)))
-
-    return BalanceHistory(current=current_daily, previous=prev_daily)
+    return BalanceHistory(
+        current=current_daily,
+        opening_balance=round(current_start, 2),
+        baseline=baseline,
+        comparison=comparison,
+        comparison_month=(
+            comparison_month.strftime("%Y-%m") if comparison_month else None
+        ),
+        comparison_opening_balance=(
+            round(comparison_opening_balance, 2)
+            if comparison_opening_balance is not None else None
+        ),
+    )

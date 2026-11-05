@@ -35,7 +35,8 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { useCreateTransaction } from '@/hooks/use-create-transaction'
 import { resolveDateFnsLocale } from '@/lib/date-fns-locale'
-import { formatCurrency } from '@/lib/format'
+import { formatCompactCurrency, formatCurrency } from '@/lib/format'
+import { LoanScheduleCard } from '@/components/loan-schedule-card'
 import {
   AreaChart,
   Area,
@@ -45,7 +46,6 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
-import { isInflow } from '@/lib/transaction-direction'
 
 // Rows per "Show more" on a non-credit-card account. Balances come from the
 // server, so they hold whatever has been loaded (#1202).
@@ -308,6 +308,7 @@ export default function AccountDetailPage() {
     queryFn: () => accounts.get(id!),
     enabled: !!id,
   })
+  const isCreditCard = account?.type === 'credit_card'
 
   // Bills (faturas) from the provider's bills feed — issue #92. Only fetched
   // for CC accounts; non-CC and CC-without-bills both return [] so the UI
@@ -522,7 +523,15 @@ export default function AccountDetailPage() {
   // client-side cycle math below, which needs every row of the cycle rather
   // than the first page (#1202).
   const { data: cycleTxData, isLoading: cycleTxLoading } = useQuery({
-    queryKey: ['transactions', { account_id: id, bill_id: activeBill?.id, from: filterFrom, to: filterTo, include_opening_balance: true, unbilled_only: isInProgressCycle }],
+    queryKey: ['transactions', {
+      account_id: id,
+      bill_id: activeBill?.id,
+      from: filterFrom,
+      to: filterTo,
+      include_opening_balance: true,
+      unbilled_only: isInProgressCycle,
+      statement_view: isCreditCard,
+    }],
     queryFn: async () => {
       const params = {
         account_id: id,
@@ -535,6 +544,9 @@ export default function AccountDetailPage() {
         // current view), exclude already-billed txs so the bar/list only
         // shows what's accumulating toward the next bill.
         unbilled_only: isInProgressCycle || undefined,
+        // Credit-card cycle windows represent statements, so they are always
+        // filtered by purchase date even when reporting uses accrual dates.
+        statement_view: isCreditCard || undefined,
         from: filterFrom || undefined,
         to: filterTo || undefined,
         limit: CYCLE_PAGE_SIZE,
@@ -692,7 +704,6 @@ export default function AccountDetailPage() {
   })
 
   // Whether to use primary currency amounts (for foreign-currency accounts with toggle, or domestic accounts with foreign txs)
-  const isCreditCard = account?.type === 'credit_card'
   const isForeignCurrency = account ? account.currency !== userCurrency : false
   // No real FX rate: the summary leaves the *_primary fields unset, so stay on
   // the account's own currency instead of labelling native amounts as converted.
@@ -1453,6 +1464,10 @@ export default function AccountDetailPage() {
         )
       })()}
 
+      {account.type === 'loan' && (
+        <LoanScheduleCard accountId={account.id} locale={locale} dateLocale={dateLocale} mask={mask} canWrite={canWrite} />
+      )}
+
       {/* Balance / Cycle spending chart */}
       {(() => {
         const cycleEmpty = isCreditCard && chartData.length > 0 && chartData[chartData.length - 1].balance === 0
@@ -1544,12 +1559,12 @@ export default function AccountDetailPage() {
                   tickFormatter={(v) => {
                     if (privacyMode) return ''
                     if (v === 0) return '0'
-                    return formatCurrency(v, displayCurrency, locale).replace(/,00$/, '').replace(/\.00$/, '')
+                    return formatCompactCurrency(v, displayCurrency, locale)
                   }}
                   tick={{ fontSize: 10, fill: 'var(--muted-foreground)' }}
                   axisLine={false}
                   tickLine={false}
-                  width={56}
+                  width={64}
                   tickCount={5}
                   domain={[
                     (dataMin: number) => dataMin < 0 ? Math.floor(dataMin / 100) * 100 : 0,
@@ -1753,8 +1768,8 @@ export default function AccountDetailPage() {
                             <span className="text-muted-foreground">—</span>
                           )}
                         </td>
-                        <td className={`px-2 sm:px-4 py-3 text-right text-xs sm:text-sm font-semibold tabular-nums whitespace-nowrap ${tx.is_ignored ? 'text-gray-500' : isInflow(tx) ? 'text-emerald-600' : 'text-rose-500'}`}>
-                          {mask(`${tx.is_ignored ? ' ' : isInflow(tx) ? '+' : '-'}${formatCurrency(Math.abs(Number(tx.amount)), tx.currency, locale)}`)}
+                        <td className={`px-2 sm:px-4 py-3 text-right text-xs sm:text-sm font-semibold tabular-nums whitespace-nowrap ${tx.is_ignored ? 'text-gray-500' : tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
+                          {mask(`${tx.is_ignored ? ' ' : tx.type === 'credit' ? '+' : '-'}${formatCurrency(Math.abs(Number(tx.amount)), tx.currency, locale)}`)}
                           {tx.currency !== userCurrency && tx.amount_primary != null && (
                             <span className="block text-[10px] text-muted-foreground tabular-nums">
                               {mask(formatCurrency(Math.abs(tx.amount_primary), userCurrency, locale))}

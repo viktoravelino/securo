@@ -6,7 +6,8 @@ signal) only need to be made here.
 """
 import uuid
 from datetime import date
-from typing import Optional
+from decimal import Decimal
+from typing import Iterable, Optional
 
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -131,6 +132,23 @@ def is_transfer():
         Transaction.transfer_pair_id.is_not(None),
         Transaction.category_id.in_(
             select(Category.id).where(Category.treat_as_transfer.is_(True))
+        ),
+    )
+
+
+def is_not_transfer():
+    """SQL filter: the negation of `is_transfer`, safe for uncategorized rows.
+
+    `~is_transfer()` would also drop rows with no category: their
+    `category_id IN (...)` is NULL, so the whole negation is NULL.
+    """
+    return and_(
+        Transaction.transfer_pair_id.is_(None),
+        or_(
+            Transaction.category_id.is_(None),
+            Transaction.category_id.not_in(
+                select(Category.id).where(Category.treat_as_transfer.is_(True))
+            ),
         ),
     )
 
@@ -281,21 +299,6 @@ def counts_as_user_pnl():
     )
 
 
-def signed_share_amount():
-    """A split share carrying its parent's sign.
-
-    Shares are stored as positive magnitudes (split_service), but a debit with
-    a negative amount (a repayment) is money in, so its shares must offset
-    spending in the opposite direction. Aggregations sum this instead of the
-    raw `share_amount`."""
-    from app.models.transaction_split import TransactionSplit
-
-    return case(
-        (Transaction.amount < 0, -TransactionSplit.share_amount),
-        else_=TransactionSplit.share_amount,
-    )
-
-
 async def owner_split_offset_pnl(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -336,13 +339,13 @@ async def owner_split_offset_pnl(
             Transaction.currency,
             func.sum(
                 case(
-                    (Transaction.type == "credit", signed_share_amount()),
+                    (Transaction.type == "credit", TransactionSplit.share_amount),
                     else_=0,
                 )
             ),
             func.sum(
                 case(
-                    (Transaction.type == "debit", signed_share_amount()),
+                    (Transaction.type == "debit", TransactionSplit.share_amount),
                     else_=0,
                 )
             ),
@@ -424,7 +427,7 @@ async def owner_split_offset_by_category(
         select(
             Transaction.category_id,
             Transaction.currency,
-            func.sum(signed_share_amount()),
+            func.sum(TransactionSplit.share_amount),
         )
         .join(Transaction, TransactionSplit.transaction_id == Transaction.id)
         .where(
@@ -462,6 +465,61 @@ async def owner_split_offset_by_category(
         converted, _ = await _convert(session, _Decimal(str(total)), cur, primary_currency)
         out[cat_id] = out.get(cat_id, 0.0) + float(converted)
     return out
+
+
+async def forecast_owner_share_fractions(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    transactions: Iterable[Transaction],
+) -> dict[uuid.UUID, Decimal]:
+    """Map the user's own split forecast rows to the fraction that is their cost.
+
+    The `owner_split_offset_*` helpers only see posted rows dated up to today.
+    Pending and future-dated rows reach the projections one by one through
+    `_get_forecast_transactions`, so the share-only rule is applied per row
+    instead. The fraction comes from the split amounts in the row's own
+    currency, so multiplying it into `amount_primary` keeps the conversion
+    already stored on the row and needs no FX lookup.
+
+    Rows without non-owner shares are left out; callers treat a missing id
+    as 1.
+    """
+    from app.models.group import Group, GroupMember
+    from app.models.transaction_split import TransactionSplit
+
+    own_rows = {tx.id: tx for tx in transactions if tx.user_id == user_id}
+    if not own_rows:
+        return {}
+
+    viewer_member_ids = (
+        select(GroupMember.id)
+        .outerjoin(Group, Group.id == GroupMember.group_id)
+        .where(
+            or_(
+                GroupMember.linked_user_id == user_id,
+                and_(GroupMember.is_self == True, Group.user_id == user_id),
+            )
+        )
+    )
+    result = await session.execute(
+        select(TransactionSplit.transaction_id, func.sum(TransactionSplit.share_amount))
+        .where(
+            TransactionSplit.transaction_id.in_(list(own_rows)),
+            TransactionSplit.group_member_id.notin_(viewer_member_ids),
+        )
+        .group_by(TransactionSplit.transaction_id)
+    )
+
+    fractions: dict[uuid.UUID, Decimal] = {}
+    for tx_id, others in result.all():
+        full = abs(Decimal(str(own_rows[tx_id].amount)))
+        if not full:
+            continue
+        # Signed and unclamped, like the posted offset: an exact split may
+        # give a member a negative share, and the owner's share then exceeds
+        # the row.
+        fractions[tx_id] = 1 - Decimal(str(others or 0)) / full
+    return fractions
 
 
 async def viewer_shared_pnl(
@@ -504,13 +562,13 @@ async def viewer_shared_pnl(
             Transaction.currency,
             func.sum(
                 case(
-                    (Transaction.type == "credit", signed_share_amount()),
+                    (Transaction.type == "credit", TransactionSplit.share_amount),
                     else_=0,
                 )
             ),
             func.sum(
                 case(
-                    (Transaction.type == "debit", signed_share_amount()),
+                    (Transaction.type == "debit", TransactionSplit.share_amount),
                     else_=0,
                 )
             ),
@@ -592,7 +650,7 @@ async def viewer_shared_spending_by_category(
         select(
             Transaction.category_id,
             Transaction.currency,
-            func.sum(signed_share_amount()),
+            func.sum(TransactionSplit.share_amount),
         )
         .join(Transaction, TransactionSplit.transaction_id == Transaction.id)
         .where(

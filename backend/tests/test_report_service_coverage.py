@@ -274,160 +274,6 @@ async def test_income_expenses_yearly_interval(session, test_user, test_workspac
     assert bd["income"] == pytest.approx(2000.0)
 
 
-async def test_income_expenses_compare_previous(session, test_user, test_workspace):
-    """A window that starts on the 1st compares with the same days of the month before."""
-    cat = await _make_category(session, test_user.id, "Compare Cat")
-    acct = await _make_account(session, test_user.id, "IE Compare")
-    # Feb 10 sits inside Feb 1-15 (month step) but outside Feb 14-28 (day length).
-    await _add_txn(session, test_user.id, acct.id, 500, "debit", date(2026, 3, 5), category_id=cat.id)
-    await _add_txn(session, test_user.id, acct.id, 200, "debit", date(2026, 2, 10), category_id=cat.id)
-    await _add_txn(session, test_user.id, acct.id, 1000, "credit", date(2026, 2, 10))
-    await _add_txn(session, test_user.id, acct.id, 999, "debit", date(2026, 2, 20), category_id=cat.id)
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=1, interval="monthly",
-        start_date=date(2026, 3, 1), end_date=date(2026, 3, 15), compare="previous",
-    )
-    assert report.comparison is not None
-    assert report.comparison.start_date == "2026-02-01"
-    assert report.comparison.end_date == "2026-02-15"
-    bd = {b.key: b.value for b in report.summary.breakdowns}
-    assert bd["expenses"] == pytest.approx(500.0)
-    comp_bd = {b.key: b.value for b in report.comparison.summary.breakdowns}
-    assert comp_bd["expenses"] == pytest.approx(200.0)
-    assert comp_bd["income"] == pytest.approx(1000.0)
-    assert "Compare Cat" in {c.label for c in report.comparison.composition}
-
-
-async def test_income_expenses_compare_current_composition_explicit_dates(
-    session, test_user, test_workspace
-):
-    """Explicit dates give actuals only, so current_composition equals composition."""
-    cat = await _make_category(session, test_user.id, "Same Cat")
-    acct = await _make_account(session, test_user.id, "IE Same")
-    await _add_txn(session, test_user.id, acct.id, 70, "debit", date(2026, 3, 5), category_id=cat.id)
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=1, interval="monthly",
-        start_date=date(2026, 3, 1), end_date=date(2026, 3, 31), compare="previous",
-    )
-    assert report.comparison is not None
-    assert report.composition
-    assert report.comparison.current_composition == report.composition
-
-
-async def test_income_expenses_compare_current_composition_excludes_forecast(
-    session, test_user, test_workspace, monkeypatch
-):
-    """With a preset, composition adds projections but current_composition is actuals only."""
-    import app.services.report_service as rs
-
-    calls: list[tuple[date | None, date | None]] = []
-    real = rs.get_income_expenses_report
-
-    async def spy(*args, **kwargs):
-        calls.append((kwargs.get("start_date"), kwargs.get("end_date")))
-        return await real(*args, **kwargs)
-
-    monkeypatch.setattr(rs, "get_income_expenses_report", spy)
-
-    actual_cat = await _make_category(session, test_user.id, "Actual Cat")
-    rent = await _make_category(session, test_user.id, "Projected Rent")
-    acct = await _make_account(session, test_user.id, "IE Forecast")
-    today = date.today()
-    await _add_txn(session, test_user.id, acct.id, 40, "debit", today, category_id=actual_cat.id)
-    await _make_recurring(
-        session, test_user.id, acct.id, 800, "debit",
-        frequency="monthly", next_occurrence=today.replace(day=1),
-        category_id=rent.id,
-    )
-
-    report = await real(
-        session, test_workspace.id, test_user.id, months=1, interval="monthly",
-        compare="previous",
-    )
-    assert report.comparison is not None
-    assert "Projected Rent" in {c.label for c in report.composition}
-    current_labels = {c.label for c in report.comparison.current_composition}
-    assert "Projected Rent" not in current_labels
-    assert "Actual Cat" in current_labels
-    # The comparison window and the current window are both nested calls with explicit dates.
-    assert len(calls) == 2
-    assert all(start is not None and end is not None for start, end in calls)
-
-
-async def test_income_expenses_compare_year_ago(session, test_user, test_workspace):
-    """compare=year_ago shifts both bounds back one calendar year."""
-    acct = await _make_account(session, test_user.id, "IE Year Ago")
-    await _add_txn(session, test_user.id, acct.id, 300, "debit", date(2025, 3, 10))
-    await _add_txn(session, test_user.id, acct.id, 100, "debit", date(2026, 3, 10))
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=1, interval="monthly",
-        start_date=date(2026, 3, 1), end_date=date(2026, 3, 15), compare="year_ago",
-    )
-    assert report.comparison is not None
-    assert report.comparison.start_date == "2025-03-01"
-    assert report.comparison.end_date == "2025-03-15"
-    comp_bd = {b.key: b.value for b in report.comparison.summary.breakdowns}
-    assert comp_bd["expenses"] == pytest.approx(300.0)
-    bd = {b.key: b.value for b in report.summary.breakdowns}
-    assert bd["expenses"] == pytest.approx(100.0)
-
-
-async def test_income_expenses_no_compare_has_none_comparison(
-    session, test_user, test_workspace
-):
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=1, interval="monthly"
-    )
-    assert report.comparison is None
-
-
-async def test_income_expenses_composition_carries_category_group(
-    session, test_user, test_workspace
-):
-    """Composition items carry the category group; others have None."""
-    group = CategoryGroup(
-        id=uuid.uuid4(), user_id=test_user.id, name="Essentials", color="#112233",
-    )
-    session.add(group)
-    await session.commit()
-    grouped = await _make_category(
-        session, test_user.id, "Grouped", group_id=group.id,
-    )
-    projected = await _make_category(
-        session, test_user.id, "Projected", group_id=group.id,
-    )
-    plain = await _make_category(session, test_user.id, "Plain")
-    acct = await _make_account(session, test_user.id, "IE Group")
-    today = date.today()
-    await _add_txn(session, test_user.id, acct.id, 100, "debit", today, category_id=grouped.id)
-    await _add_txn(session, test_user.id, acct.id, 50, "debit", today, category_id=plain.id)
-    await _add_txn(session, test_user.id, acct.id, 25, "debit", today)
-    # Only a recurring rule for this category, so it takes the cat_cache path.
-    await _make_recurring(
-        session, test_user.id, acct.id, 80, "debit",
-        frequency="monthly", next_occurrence=today.replace(day=1),
-        category_id=projected.id,
-    )
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=2, interval="monthly"
-    )
-
-    def groups_by_label(items):
-        return {c.label: (c.group_id, c.group_name, c.group_color) for c in items}
-
-    expected = (str(group.id), "Essentials", "#112233")
-    for items in (report.composition, report.trend[-1].composition):
-        found = groups_by_label(items)
-        assert found["Grouped"] == expected
-        assert found["Plain"] == (None, None, None)
-        assert found["Uncategorized"] == (None, None, None)
-    assert groups_by_label(report.composition)["Projected"] == expected
-
-
 async def test_income_expenses_excludes_opening_but_keeps_closed_history(
     session, test_user, test_workspace
 ):
@@ -497,6 +343,59 @@ async def test_income_expenses_pending_is_projected_not_actual(
     bd = {b.key: b.value for b in report.summary.breakdowns}
     assert bd["expenses"] == pytest.approx(100.0)
     assert bd["projectedExpenses"] == pytest.approx(50.0)
+
+
+async def test_income_expenses_split_pending_projects_owner_share(
+    session, test_user, test_workspace
+):
+    """A pending row split half with a friend projects only the owner's half,
+    in the totals and in the category composition and trend alike."""
+    from app.schemas.group import GroupCreate, GroupMemberCreate
+    from app.schemas.transaction_split import TransactionSplitInput, TransactionSplitsInput
+    from app.services import group_service, split_service
+
+    acct = await _make_account(session, test_user.id, "IE Split Pending")
+    cat = await _make_category(session, test_user.id, "Shared")
+    today = date.today()
+    tx = await _add_txn(
+        session, test_user.id, acct.id, 80, "debit", today,
+        category_id=cat.id, status="pending",
+    )
+    group = await group_service.create_group(
+        session, test_workspace.id, test_user.id,
+        GroupCreate(name="IE Split", default_currency="BRL"),
+    )
+    members = []
+    for name in ("Me", "Friend"):
+        member = await group_service.create_member(
+            session, group.id, test_workspace.id,
+            GroupMemberCreate(name=name, is_self=(name == "Me")),
+        )
+        assert member is not None
+        members.append(member)
+    await split_service.replace_splits(
+        session,
+        tx,
+        TransactionSplitsInput(
+            share_type="exact",
+            splits=[
+                TransactionSplitInput(group_member_id=m.id, share_amount=Decimal("40"))
+                for m in members
+            ],
+        ),
+        test_user.id,
+    )
+    await session.commit()
+
+    report = await get_income_expenses_report(
+        session, test_workspace.id, test_user.id, months=1, interval="monthly"
+    )
+    bd = {b.key: b.value for b in report.summary.breakdowns}
+    assert bd["projectedExpenses"] == pytest.approx(40.0)
+    shared = next(c for c in report.composition if c.label == "Shared")
+    assert shared.value == pytest.approx(40.0)
+    shared_trend = next(ct for ct in report.category_trend if ct.label == "Shared")
+    assert shared_trend.total == pytest.approx(40.0)
 
 
 async def test_income_expenses_many_categories_triggers_other_bucket(session, test_user, test_workspace):
@@ -1023,14 +922,17 @@ async def test_custom_income_expenses_only_include_in_range_actuals(
     category = await _make_category(session, test_user.id, 'Actual category')
     for amount, kind, day, status in [
         (100, 'credit', start, 'posted'),
-        (30, 'debit', end, 'posted'),
+        (-30, 'debit', end, 'posted'),
         (500, 'credit', start - timedelta(days=1), 'posted'),
-        (700, 'debit', end + timedelta(days=1), 'posted'),
+        (-700, 'debit', end + timedelta(days=1), 'posted'),
         (900, 'credit', start, 'pending'),
-        (800, 'debit', end, 'pending'),
+        (-800, 'debit', end, 'pending'),
     ]:
+        # Debits stay uncategorized so the credit-only category keeps its
+        # income side (a shared category would net them against each other).
         await _add_txn(session, test_user.id, account.id, amount, kind, day,
-                       status=status, category_id=category.id, currency=currency)
+                       status=status, currency=currency,
+                       category_id=category.id if kind == 'credit' else None)
     recurring = await _make_recurring(
         session, test_user.id, account.id, 600, 'credit',
         next_occurrence=start, category_id=category.id, currency=currency,
@@ -1066,304 +968,43 @@ async def test_custom_income_expenses_only_include_in_range_actuals(
         assert sum(point.value for point in item.series) == item.total
 
 
-async def test_income_expenses_nets_negative_debit(session, test_user, test_workspace):
-    """Debits 314.97, 314.97 and -472.46 in one category report 157.48 everywhere."""
-    cat = await _make_category(session, test_user.id, "Card")
-    acct = await _make_account(session, test_user.id, "IE NegDebit")
-    today = date.today()
-    for amount in (314.97, 314.97, -472.46):
-        await _add_txn(session, test_user.id, acct.id, amount, "debit", today, category_id=cat.id)
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=3, interval="monthly"
-    )
-    bd = {b.key: b.value for b in report.summary.breakdowns}
-    assert bd["expenses"] == pytest.approx(157.48)
-    card = next(c for c in report.composition if c.label == "Card")
-    assert card.value == pytest.approx(157.48)
-    card_trend = next(ct for ct in report.category_trend if ct.label == "Card" and ct.group == "expenses")
-    assert card_trend.total == pytest.approx(157.48)
-
-
-async def test_income_expenses_net_negative_category_contributes_nothing(
+async def test_income_expenses_trend_composition_carries_category_group(
     session, test_user, test_workspace
 ):
-    cat = await _make_category(session, test_user.id, "OnlyRefund")
-    acct = await _make_account(session, test_user.id, "IE NegOnly")
-    await _add_txn(session, test_user.id, acct.id, -50, "debit", date.today(), category_id=cat.id)
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=3, interval="monthly"
-    )
-    bd = {b.key: b.value for b in report.summary.breakdowns}
-    assert bd["expenses"] == 0.0
-    assert all(c.label != "OnlyRefund" for c in report.composition)
-
-
-async def test_cash_flow_nets_negative_debit_outflow(session, test_user, test_workspace):
-    """A future booked -472.46 debit offsets same-day outflow instead of adding to it."""
-    acct = await _make_account(session, test_user.id, "CF NegDebit")
-    when = date.today() + timedelta(days=10)
-    for amount in (314.97, 314.97, -472.46):
-        await _add_txn(session, test_user.id, acct.id, amount, "debit", when)
-
-    report = await get_cash_flow_report(
-        session, test_workspace.id, test_user.id, months=3, interval="daily"
-    )
-    proj_expenses = next(b for b in report.summary.breakdowns if b.key == "projectedExpenses")
-    assert proj_expenses.value == pytest.approx(157.48)
-
-
-async def test_income_expenses_forecast_nets_pending_negative_debit(
-    session, test_user, test_workspace
-):
-    """Pending 314.97 x2 and -472.46 forecast 157.48 in summary, trend and composition."""
-    cat = await _make_category(session, test_user.id, "PendingCard")
-    acct = await _make_account(session, test_user.id, "IE PendingNeg")
-    for amount in (314.97, 314.97, -472.46):
-        await _add_txn(
-            session, test_user.id, acct.id, amount, "debit", date.today(),
-            category_id=cat.id, status="pending",
-        )
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=3, interval="monthly"
-    )
-    bd = {b.key: b.value for b in report.summary.breakdowns}
-    assert bd["projectedExpenses"] == pytest.approx(157.48)
-    card = next(c for c in report.composition if c.label == "PendingCard")
-    assert card.value == pytest.approx(157.48)
-
-
-async def test_income_expenses_forecast_refund_only_projects_zero(
-    session, test_user, test_workspace
-):
-    """A lone pending -50 debit clamps to 0 and its category drops out."""
-    cat = await _make_category(session, test_user.id, "PendingRefundOnly")
-    acct = await _make_account(session, test_user.id, "IE PendingRefund")
-    await _add_txn(
-        session, test_user.id, acct.id, -50, "debit", date.today(),
-        category_id=cat.id, status="pending",
-    )
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=3, interval="monthly"
-    )
-    bd = {b.key: b.value for b in report.summary.breakdowns}
-    assert bd["projectedExpenses"] == 0.0
-    assert all(c.label != "PendingRefundOnly" for c in report.composition)
-    assert all(ct.label != "PendingRefundOnly" for ct in report.category_trend)
-
-
-async def test_income_expenses_negative_credit_reduces_income_only_to_zero(
-    session, test_user, test_workspace
-):
-    """A negative credit offsets income but never below 0, and drops its category."""
-    cat = await _make_category(session, test_user.id, "ClawedBack")
-    acct = await _make_account(session, test_user.id, "IE NegCredit")
-    await _add_txn(session, test_user.id, acct.id, -50, "credit", date.today(), category_id=cat.id)
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=3, interval="monthly"
-    )
-    bd = {b.key: b.value for b in report.summary.breakdowns}
-    assert bd["income"] == 0.0
-    assert all(c.label != "ClawedBack" for c in report.composition)
-    assert all(ct.label != "ClawedBack" for ct in report.category_trend)
-
-
-async def test_income_expenses_clamps_per_period_not_across_range(
-    session, test_user, test_workspace
-):
-    """A repayment in a later period never reduces an earlier period's spending.
-
-    Prior month 314.97 x2, this month -472.46: summary and category trend keep
-    the prior month's 629.94 (this month clamps to 0), while composition nets
-    the whole range to 157.48.
-    """
-    cat = await _make_category(session, test_user.id, "CrossPeriod")
-    acct = await _make_account(session, test_user.id, "IE CrossPeriod")
-    this_month = date.today().replace(day=1)
-    prior_month = (this_month - timedelta(days=1)).replace(day=1)
-    for amount, when in ((314.97, prior_month), (314.97, prior_month), (-472.46, this_month)):
-        await _add_txn(session, test_user.id, acct.id, amount, "debit", when, category_id=cat.id)
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=3, interval="monthly"
-    )
-    bd = {b.key: b.value for b in report.summary.breakdowns}
-    assert bd["expenses"] == pytest.approx(629.94)
-    trend = next(ct for ct in report.category_trend if ct.label == "CrossPeriod")
-    assert trend.total == pytest.approx(629.94)
-    comp = next(c for c in report.composition if c.label == "CrossPeriod")
-    assert comp.value == pytest.approx(157.48)
-
-
-async def test_cash_flow_refund_only_clamps_outflow_but_raises_balance(
-    session, test_user, test_workspace
-):
-    """A future -50 debit: projected expenses clamp to 0, the balance still rises by 50."""
-    acct = await _make_account(session, test_user.id, "CF Refund")
-    when = date.today() + timedelta(days=10)
-    await _add_txn(session, test_user.id, acct.id, -50, "debit", when)
-
-    report = await get_cash_flow_report(
-        session, test_workspace.id, test_user.id, months=3, interval="daily"
-    )
-    bd = {b.key: b.value for b in report.summary.breakdowns}
-    assert bd["projectedExpenses"] == 0.0
-    assert bd["endingBalance"] - bd["startingBalance"] == pytest.approx(50.0)
-    assert all(p.breakdowns["outflow"] >= 0 for p in report.trend)
-
-
-async def _make_split_group(session, owner_id, *, viewer_user_id=None):
-    """A group owned by `owner_id` with an is_self member and a second member
-    (the linked viewer when given, otherwise a plain friend)."""
-    from app.models.group import Group, GroupMember
-
-    group = Group(
-        id=uuid.uuid4(), user_id=owner_id, name="Split",
-        kind="shared", default_currency="BRL",
+    """Per-period composition items carry the category group; others have None."""
+    group = CategoryGroup(
+        id=uuid.uuid4(), user_id=test_user.id, name="Essentials", color="#112233",
     )
     session.add(group)
-    await session.flush()
-    self_m = GroupMember(
-        id=uuid.uuid4(), group_id=group.id, name="Me",
-        linked_user_id=owner_id, is_self=True,
-    )
-    other_m = GroupMember(
-        id=uuid.uuid4(), group_id=group.id, name="Other",
-        linked_user_id=viewer_user_id, is_self=False,
-    )
-    session.add_all([self_m, other_m])
     await session.commit()
-    return self_m, other_m
-
-
-async def _split_5050(session, txn, self_m, other_m, *, workspace_id=None):
-    from app.models.transaction_split import TransactionSplit
-
-    for member in (self_m, other_m):
-        session.add(TransactionSplit(
-            id=uuid.uuid4(), transaction_id=txn.id, group_member_id=member.id,
-            share_amount=abs(txn.amount) / 2, share_type="exact",
-            **({"workspace_id": workspace_id} if workspace_id else {}),
-        ))
-    await session.commit()
-
-
-async def test_income_expenses_owner_refund_split_matches_dashboard(
-    session, test_user, test_workspace
-):
-    """A -472.46 debit split 50/50 is a refund: expenses clamp to 0 once, after
-    the split offset (same as the dashboard), and net stays the signed 236.23."""
-    from app.services.dashboard_service import get_summary
-
-    acct = await _make_account(session, test_user.id, "IE RefundSplit")
-    txn = await _add_txn(session, test_user.id, acct.id, -472.46, "debit", date.today())
-    self_m, friend = await _make_split_group(session, test_user.id)
-    await _split_5050(session, txn, self_m, friend)
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=1, interval="monthly"
-    )
-    summary = await get_summary(
-        session, test_workspace.id, test_user.id, month=date.today().replace(day=1)
-    )
-    bd = {b.key: b.value for b in report.summary.breakdowns}
-    assert bd["expenses"] == 0.0
-    assert bd["expenses"] == pytest.approx(summary.monthly_expenses)
-    assert report.summary.primary_value == pytest.approx(236.23)
-    assert report.trend[-1].value == pytest.approx(236.23)
-
-
-async def test_income_expenses_viewer_share_of_refund_split_clamps_once(
-    session, test_user, test_workspace
-):
-    """Viewer's own 100 debit plus a -236.23 share of someone's refund split
-    nets to -136.23 and clamps to 0 (never a negative expense)."""
-    import bcrypt as _bcrypt
-    from app.models.user import User as UserModel
-    from app.models.workspace import Workspace, WorkspaceMember
-
-    owner = UserModel(
-        id=uuid.uuid4(), email="owner_report_refund@example.com",
-        hashed_password=_bcrypt.hashpw(b"x", _bcrypt.gensalt()).decode(),
-        is_active=True, is_verified=True,
-        preferences={"currency_display": "BRL"},
-    )
-    session.add(owner)
-    await session.flush()
-    owner_ws = Workspace(
-        id=uuid.uuid4(), name="OwnerWS", kind="personal",
-        created_by_user_id=owner.id, default_currency="BRL", locale="en",
-    )
-    session.add(owner_ws)
-    await session.flush()
-    session.add(WorkspaceMember(
-        id=uuid.uuid4(), workspace_id=owner_ws.id, user_id=owner.id, role="owner"
-    ))
-    await session.commit()
-
-    owner_acct = await _make_account(session, owner.id, "Owner Acct")
-    owner_acct.workspace_id = owner_ws.id
-    viewer_acct = await _make_account(session, test_user.id, "Viewer Acct")
-    await _add_txn(session, test_user.id, viewer_acct.id, 100, "debit", date.today())
-    txn = await _add_txn(
-        session, owner.id, owner_acct.id, -472.46, "debit", date.today(),
-        workspace_id=owner_ws.id,
-    )
-    self_m, viewer_m = await _make_split_group(
-        session, owner.id, viewer_user_id=test_user.id
-    )
-    await _split_5050(session, txn, self_m, viewer_m, workspace_id=owner_ws.id)
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=1, interval="monthly"
-    )
-    bd = {b.key: b.value for b in report.summary.breakdowns}
-    assert bd["expenses"] == 0.0
-    assert all(p.breakdowns["expenses"] >= 0 for p in report.trend)
-
-
-async def test_income_expenses_lone_refund_has_positive_net(
-    session, test_user, test_workspace
-):
-    """A lone -50 debit: expenses 0 (clamped) but net is the signed +50."""
-    acct = await _make_account(session, test_user.id, "IE LoneRefund")
-    await _add_txn(session, test_user.id, acct.id, -50, "debit", date.today())
-
-    report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=1, interval="monthly"
-    )
-    bd = {b.key: b.value for b in report.summary.breakdowns}
-    assert bd["expenses"] == 0.0
-    assert report.summary.primary_value == pytest.approx(50.0)
-    assert report.trend[-1].value == pytest.approx(50.0)
-
-
-async def test_category_trend_pending_refund_never_makes_negative_bar(
-    session, test_user, test_workspace
-):
-    """Food 600 last month and a pending -100 this month: this month's bar is
-    0 (not -100) and the category total is the clamped series sum, 600."""
-    cat = await _make_category(session, test_user.id, "FoodForecast")
-    acct = await _make_account(session, test_user.id, "IE FoodForecast")
-    this_month = date.today().replace(day=1)
-    prior_month = (this_month - timedelta(days=1)).replace(day=1)
-    await _add_txn(session, test_user.id, acct.id, 600, "debit", prior_month, category_id=cat.id)
-    await _add_txn(
-        session, test_user.id, acct.id, -100, "debit", date.today(),
-        category_id=cat.id, status="pending",
+    grouped = await _make_category(session, test_user.id, "Grouped", group_id=group.id)
+    projected = await _make_category(session, test_user.id, "Projected", group_id=group.id)
+    plain = await _make_category(session, test_user.id, "Plain")
+    acct = await _make_account(session, test_user.id, "IE Group")
+    today = date.today()
+    await _add_txn(session, test_user.id, acct.id, 100, "debit", today, category_id=grouped.id)
+    await _add_txn(session, test_user.id, acct.id, 50, "debit", today, category_id=plain.id)
+    await _add_txn(session, test_user.id, acct.id, 25, "debit", today)
+    # Only a recurring rule for this category, so it takes the cat_cache path.
+    await _make_recurring(
+        session, test_user.id, acct.id, 80, "debit",
+        frequency="monthly", next_occurrence=today.replace(day=1),
+        category_id=projected.id,
     )
 
     report = await get_income_expenses_report(
-        session, test_workspace.id, test_user.id, months=3, interval="monthly"
+        session, test_workspace.id, test_user.id, months=2, interval="monthly"
     )
-    trend = next(ct for ct in report.category_trend if ct.label == "FoodForecast")
-    assert all(p.value >= 0 for p in trend.series)
-    assert trend.series[-1].value == 0.0
-    assert trend.total == pytest.approx(600.0)
+
+    found = {
+        c.label: (c.group_id, c.group_name, c.group_color)
+        for c in report.trend[-1].composition
+    }
+    expected = (str(group.id), "Essentials", "#112233")
+    assert found["Grouped"] == expected
+    assert found["Projected"] == expected
+    assert found["Plain"] == (None, None, None)
+    assert found["Uncategorized"] == (None, None, None)
 
 
 async def test_income_expenses_trend_composition_includes_investments(
@@ -1383,5 +1024,4 @@ async def test_income_expenses_trend_composition_includes_investments(
     point = next(p for p in report.trend if p.date == today.strftime("%Y-%m"))
     items = [c for c in point.composition if c.group == "investments"]
     assert [(c.key, c.value) for c in items] == [(str(invest.id), pytest.approx(350.0))]
-    assert str(invest.id) in {c.key for c in report.composition if c.group == "investments"}
     assert str(invest.id) not in {c.key for c in report.category_trend}

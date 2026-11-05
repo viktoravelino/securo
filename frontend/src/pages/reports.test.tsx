@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { cleanup, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 
 import ReportsPage from '@/pages/reports'
 import { renderWithProviders, t } from '@/test/utils'
@@ -33,8 +33,10 @@ vi.mock('@/contexts/collection-filter-context', () => ({
   useCollectionFilter: () => ({ activeAccountIds: null, activeWalletIds: null }),
 }))
 
+const privacy = vi.hoisted(() => ({ on: false }))
+
 vi.mock('@/hooks/use-privacy-mode', () => ({
-  usePrivacyMode: () => ({ mask: (value: string) => value, privacyMode: false, MASK: '••••' }),
+  usePrivacyMode: () => ({ mask: (value: string) => value, privacyMode: privacy.on, MASK: '••••' }),
 }))
 
 function emptyReport(type: string): ReportResponse {
@@ -51,6 +53,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date(2026, 8, 12, 12))
   vi.clearAllMocks()
+  privacy.on = false
   api.reports.netWorth.mockResolvedValue(emptyReport('net_worth'))
   api.reports.incomeExpenses.mockResolvedValue(emptyReport('income_expenses'))
   api.reports.cashFlow.mockResolvedValue(emptyReport('cash_flow'))
@@ -149,7 +152,7 @@ it.each([
   await user.click(custom)
   await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
   const reportApi = tab === 'reports.netWorth' ? api.reports.netWorth : api.reports.incomeExpenses
-  await waitFor(() => expect(reportApi.mock.calls.at(-1)?.slice(5, 7)).toEqual([
+  await waitFor(() => expect(reportApi.mock.calls.at(-1)?.slice(-2)).toEqual([
     '2026-01-01', '2026-09-12',
   ]))
   await user.click(custom)
@@ -158,7 +161,7 @@ it.each([
   await waitFor(() => {
     expect(screen.getByRole('button', { name: t(fallback) })).toHaveClass('bg-primary')
     expect(reportApi.mock.calls.at(-1)?.[0]).toBe(months)
-    expect(reportApi.mock.calls.at(-1)?.slice(5, 7)).toEqual([undefined, undefined])
+    expect(reportApi.mock.calls.at(-1)?.slice(-2)).toEqual([undefined, undefined])
   })
   expect(custom).toHaveTextContent(t('reports.customRange'))
 })
@@ -170,12 +173,12 @@ it('preserves saved custom dates across supported tabs and preset dismissal', as
   await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
   for (const tab of ['reports.incomeExpenses', 'reports.moneyMap']) {
     await user.click(screen.getByRole('button', { name: t(tab) }))
-    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(5, 7))
+    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(-2))
       .toEqual(['2026-01-01', '2026-09-12']))
     expect(custom).toHaveClass('bg-primary')
   }
   await user.click(screen.getByRole('button', { name: t('reports.range6m') }))
-  await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(5, 7))
+  await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(-2))
     .toEqual([undefined, undefined]))
   const count = api.reports.incomeExpenses.mock.calls.length
   await user.click(custom)
@@ -185,7 +188,7 @@ it('preserves saved custom dates across supported tabs and preset dismissal', as
   expect(screen.getByRole('button', { name: t('reports.range6m') })).toHaveClass('bg-primary')
   await user.click(custom)
   await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
-  await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(5, 7))
+  await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(-2))
     .toEqual(['2026-01-01', '2026-09-12']))
   await user.click(screen.getByRole('button', { name: t('reports.cashFlow') }))
   await waitFor(() => expect(api.reports.cashFlow).toHaveBeenCalled())
@@ -490,141 +493,307 @@ describe('Reports page - year picker (issue #765)', () => {
   })
 })
 
-const point = (date: string, value: number) => ({ date, value, breakdowns: {}, change: null })
-const trendItem = (key: string, group: string, values: [number, number]) => ({
-  key,
-  label: key,
-  color: '#6366F1',
-  total: values[0] + values[1],
-  group,
-  series: [point('Jan', values[0]), point('Feb', values[1])],
-})
+describe('Reports page, cash-flow bars end at net flow (issue #1241)', () => {
+  const INFLOW_COLOR = 'rgb(16, 185, 129)'
+  const OUTFLOW_COLOR = 'rgb(244, 63, 94)'
 
-function incomeExpensesReport(extra: Partial<ReportResponse> = {}): ReportResponse {
-  return {
-    ...emptyReport('income_expenses'),
-    summary: {
-      primary_value: 500,
-      change_amount: 10,
-      change_percent: 2,
-      breakdowns: [
-        { key: 'income', label: 'Income', value: 1000, color: '#10B981' },
-        { key: 'expenses', label: 'Expenses', value: 500, color: '#F43F5E' },
-      ],
-    },
-    composition: [{ key: 'food', label: 'Food', value: 500, color: '#F59E0B', group: 'expenses' }],
-    category_trend: [
-      trendItem('food', 'expenses', [200, 300]),
-      trendItem('rent', 'expenses', [100, 100]),
-      trendItem('salary', 'income', [500, 500]),
-    ],
-    ...extra,
+  // Bars grow in over animation frames. Report every frame as long past the
+  // animation so the chart lands on its final geometry straight away.
+  beforeEach(() => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      setTimeout(() => callback(performance.now() + 60_000), 0))
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  type Segment = { y: number; height: number; rounded: boolean }
+  type Column = { x: number; width: number; inflow?: Segment; outflow?: Segment }
+
+  function report(type: string, trend: Array<{ date: string; breakdowns: Record<string, number> }>, seriesKeys: string[] = []) {
+    const base = emptyReport(type)
+    return {
+      ...base,
+      meta: { ...base.meta, series_keys: seriesKeys },
+      trend: trend.map((point) => ({ ...point, value: 0, change: null })),
+    }
   }
-}
 
-describe('Reports page, spending by category card', () => {
-  it('shows the card title, switches side and toggles the share mode', async () => {
-    api.reports.incomeExpenses.mockResolvedValue(incomeExpensesReport())
-    const { user } = renderWithProviders(<ReportsPage />)
-    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
+  async function openTab(tab?: string) {
+    const { user, container } = renderWithProviders(<ReportsPage />)
+    await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalled())
+    if (tab) await user.click(screen.getByRole('button', { name: t(tab) }))
+    return container
+  }
 
-    const card = await screen.findByTestId('category-stack-card')
-    expect(within(card).getByText(t('reports.spendingByCategory'))).toBeInTheDocument()
+  async function openCashFlowBars(periods: Array<[date: string, inflow: number, outflow: number]>) {
+    api.reports.cashFlow.mockResolvedValue(
+      report('cash_flow', periods.map(([date, inflow, outflow]) => ({ date, breakdowns: { inflow, outflow } }))),
+    )
+    return barChart(await openTab('reports.cashFlow'))
+  }
 
-    await user.click(within(card).getByRole('button', { name: t('reports.byIncome') }))
-    expect(within(card).getByText(t('reports.incomeByCategory'))).toBeInTheDocument()
+  // Tabs draw other charts too (balance projection, composition); the
+  // stacked bars live in their own one.
+  function barChart(container: HTMLElement) {
+    return waitFor(() => {
+      const found = Array.from(container.querySelectorAll<HTMLElement>('.recharts-wrapper'))
+        .find((wrapper) => wrapper.querySelector('.recharts-bar'))
+      expect(found).toBeDefined()
+      return found!
+    })
+  }
 
-    const share = within(card).getByRole('button', { name: t('reports.stackPercent') })
-    expect(share).toHaveAttribute('aria-pressed', 'false')
-    await user.click(share)
-    expect(share).toHaveAttribute('aria-pressed', 'true')
+  function zeroLine(chart: HTMLElement) {
+    return Number(chart.querySelector('.recharts-reference-line-line')!.getAttribute('y1'))
+  }
+
+  // Recharts draws a downward bar with a negative height; normalise to a top edge.
+  function box(path: Element) {
+    const y = Number(path.getAttribute('y'))
+    const height = Number(path.getAttribute('height'))
+    return { y: Math.min(y, y + height), height: Math.abs(height) }
+  }
+
+  function columns(chart: HTMLElement): Column[] {
+    const byX = new Map<number, Column>()
+    for (const path of chart.querySelectorAll('.recharts-bar-rectangle path')) {
+      const x = Number(path.getAttribute('x'))
+      const column = byX.get(x) ?? { x, width: Number(path.getAttribute('width')) }
+      const segment: Segment = { ...box(path), rounded: path.getAttribute('d')!.includes('A') }
+      if (path.getAttribute('fill') === '#10B981') column.inflow = segment
+      else column.outflow = segment
+      byX.set(x, column)
+    }
+    return [...byX.values()].sort((a, b) => a.x - b.x)
+  }
+
+  // jsdom has no layout, which leaves Recharts unable to map the pointer to a
+  // period. Give the chart the same box the test viewport renders it at.
+  function hoverAt(chart: HTMLElement, clientX: number) {
+    Object.defineProperties(chart, {
+      offsetWidth: { configurable: true, value: 800 },
+      offsetHeight: { configurable: true, value: 300 },
+      getBoundingClientRect: { configurable: true, value: () => DOMRect.fromRect({ width: 800, height: 300 }) },
+    })
+    fireEvent.mouseMove(chart, { clientX, clientY: 100 })
+    return chart.querySelector<HTMLElement>('.recharts-tooltip-wrapper')!
+  }
+
+  async function hoverColumn(chart: HTMLElement, column: Column) {
+    const tooltip = hoverAt(chart, column.x + column.width / 2)
+    await waitFor(() => expect(tooltip).not.toBeEmptyDOMElement())
+    return tooltip
+  }
+
+  function periodX(chart: HTMLElement, date: string) {
+    const tick = Array.from(chart.querySelectorAll('.recharts-xAxis-tick-labels text'))
+      .find((text) => text.textContent === date)!
+    return Number(tick.getAttribute('x'))
+  }
+
+  it('ends a surplus above zero, a deficit below it and break-even exactly on it', async () => {
+    const chart = await openCashFlowBars([
+      ['2026-10-01', 3000, 2500],
+      ['2026-11-01', 2500, 3000],
+      ['2026-12-01', 2000, 2000],
+    ])
+
+    await waitFor(() => {
+      const zero = zeroLine(chart)
+      const [surplus, deficit, breakEven] = columns(chart)
+      const pxPerUnit = surplus.inflow!.height / 3000
+
+      expect(surplus.inflow!.y).toBeCloseTo(zero - 500 * pxPerUnit)
+      expect(deficit.inflow!.y).toBeCloseTo(zero + 500 * pxPerUnit)
+      expect(breakEven.inflow!.y).toBeCloseTo(zero)
+    })
   })
-})
 
-describe('Reports page, period comparison', () => {
-  const comparisonReport = () =>
-    incomeExpensesReport({
-      comparison: {
-        start_date: '2025-08-01',
-        end_date: '2025-08-31',
-        summary: {
-          primary_value: 450,
-          change_amount: 0,
-          change_percent: null,
-          breakdowns: [
-            { key: 'income', label: 'Income', value: 900, color: '#10B981' },
-            { key: 'expenses', label: 'Expenses', value: 400, color: '#F43F5E' },
-          ],
-        },
-        composition: [{ key: 'food', label: 'Food', value: 400, color: '#F59E0B', group: 'expenses' }],
-        current_composition: [{ key: 'food', label: 'Food', value: 500, color: '#F59E0B', group: 'expenses' }],
-      },
+  it('keeps the inflow and outflow segments at their own lengths, stacked without a gap', async () => {
+    const chart = await openCashFlowBars([['2026-10-01', 3000, 2500]])
+
+    await waitFor(() => {
+      const [{ inflow, outflow }] = columns(chart)
+
+      expect(inflow!.height / outflow!.height).toBeCloseTo(3000 / 2500)
+      expect(outflow!.y).toBeCloseTo(inflow!.y + inflow!.height)
+    })
+  })
+
+  it('rounds whichever segment ends at net flow', async () => {
+    const chart = await openCashFlowBars([
+      ['2026-10-01', 3000, 2500],
+      ['2026-11-01', 0, 1000],
+    ])
+
+    await waitFor(() => {
+      const zero = zeroLine(chart)
+      const [mixed, outflowOnly] = columns(chart)
+
+      expect(mixed.inflow!.rounded).toBe(true)
+      expect(mixed.outflow!.rounded).toBe(false)
+      expect(outflowOnly.inflow).toBeUndefined()
+      expect(outflowOnly.outflow!.rounded).toBe(true)
+      expect(outflowOnly.outflow!.y).toBeGreaterThan(zero)
+    })
+  })
+
+  it('lists inflow, outflow and a net flow coloured by its sign in the tooltip', async () => {
+    const chart = await openCashFlowBars([
+      ['2026-10-01', 3000, 2500],
+      ['2026-11-01', 2500, 3000],
+    ])
+    let surplus!: Column
+    let deficit!: Column
+    await waitFor(() => {
+      ;[surplus, deficit] = columns(chart)
+      expect(deficit).toBeDefined()
     })
 
-  it('sends the compare mode and renders the hero deltas and the table', async () => {
-    api.reports.incomeExpenses.mockResolvedValue(comparisonReport())
-    const { user } = renderWithProviders(<ReportsPage />)
-    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
-    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
-    expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBeUndefined()
+    let tooltip = await hoverColumn(chart, deficit)
+    expect(tooltip).toHaveTextContent('2026-11-01')
+    expect(within(tooltip).getByText(`${t('reports.inflow')}: $2,500.00`)).toHaveStyle({ color: INFLOW_COLOR })
+    expect(within(tooltip).getByText(`${t('reports.outflow')}: -$3,000.00`)).toHaveStyle({ color: OUTFLOW_COLOR })
+    expect(within(tooltip).getByText(`${t('reports.netFlow')}: -$500.00`)).toHaveStyle({ color: OUTFLOW_COLOR })
 
-    await user.click(within(screen.getByTestId('reports-compare')).getByRole('button', { name: t('reports.comparePrevious') }))
-    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBe('previous'))
-
-    expect(await screen.findByText(new RegExp(t('reports.vsPrevious')))).toBeInTheDocument()
-    expect(screen.getByText('+$100.00 (+25.0%)')).toBeInTheDocument()
-    const row = screen.getByRole('row', { name: /Food/ })
-    expect(within(row).getByText('+$100.00')).toBeInTheDocument()
-    expect(within(row).getByText('+25.0%')).toBeInTheDocument()
-
-    await user.click(within(screen.getByTestId('reports-compare')).getByRole('button', { name: t('reports.compareOff') }))
-    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBeUndefined())
+    tooltip = await hoverColumn(chart, surplus)
+    await waitFor(() => expect(tooltip).toHaveTextContent('2026-10-01'))
+    expect(within(tooltip).getByText(`${t('reports.netFlow')}: $500.00`)).toHaveStyle({ color: INFLOW_COLOR })
   })
 
-  it('never sends compare from the Money Map tab', async () => {
-    const { user } = renderWithProviders(<ReportsPage />)
-    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
-    await user.click(within(await screen.findByTestId('reports-compare')).getByRole('button', { name: t('reports.compareYearAgo') }))
-    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBe('year_ago'))
-
-    await user.click(screen.getByRole('button', { name: t('reports.moneyMap') }))
-    await waitFor(() => expect(screen.queryByTestId('reports-compare')).not.toBeInTheDocument())
-    await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBeUndefined())
-  })
-})
-
-describe('Reports page, composition donut by category group', () => {
-  const groupedReport = () =>
-    incomeExpensesReport({
-      composition: [
-        { key: 'rent', label: 'Rent', value: 300, color: '#F59E0B', group: 'expenses', group_id: 'g1', group_name: 'Essentials', group_color: '#112233' },
-        { key: 'food', label: 'Food', value: 200, color: '#10B981', group: 'expenses', group_id: 'g1', group_name: 'Essentials', group_color: '#112233' },
-        { key: 'fun', label: 'Fun', value: 100, color: '#8B5CF6', group: 'expenses' },
-      ],
+  it('lists both amounts in the tooltip when a period has only one of them', async () => {
+    const chart = await openCashFlowBars([
+      ['2026-10-01', 1200, 0],
+      ['2026-11-01', 0, 800],
+    ])
+    let inflowOnly!: Column
+    let outflowOnly!: Column
+    await waitFor(() => {
+      ;[inflowOnly, outflowOnly] = columns(chart)
+      expect(outflowOnly).toBeDefined()
     })
 
-  it('narrows to one group on click and goes back', async () => {
-    api.reports.incomeExpenses.mockResolvedValue(groupedReport())
-    const { user } = renderWithProviders(<ReportsPage />)
-    await user.click(screen.getByRole('button', { name: t('reports.incomeExpenses') }))
+    let tooltip = await hoverColumn(chart, inflowOnly)
+    expect(within(tooltip).getByText(`${t('reports.inflow')}: $1,200.00`)).toBeInTheDocument()
+    expect(within(tooltip).getByText(`${t('reports.outflow')}: $0.00`)).toHaveStyle({ color: OUTFLOW_COLOR })
+    expect(within(tooltip).getByText(`${t('reports.netFlow')}: $1,200.00`)).toBeInTheDocument()
 
-    const card = (await screen.findByText(t('reports.composition'))).closest('.rounded-xl') as HTMLElement
-    await user.click(within(card).getByRole('button', { name: t('reports.byExpenses') }))
+    tooltip = await hoverColumn(chart, outflowOnly)
+    await waitFor(() => expect(tooltip).toHaveTextContent('2026-11-01'))
+    expect(within(tooltip).getByText(`${t('reports.inflow')}: $0.00`)).toHaveStyle({ color: INFLOW_COLOR })
+    expect(within(tooltip).getByText(`${t('reports.outflow')}: -$800.00`)).toBeInTheDocument()
+    expect(within(tooltip).getByText(`${t('reports.netFlow')}: -$800.00`)).toBeInTheDocument()
+  })
 
-    expect(within(card).getByRole('button', { name: 'Essentials' })).toBeInTheDocument()
-    expect(within(card).getByRole('button', { name: t('reports.noGroup') })).toBeInTheDocument()
+  it('lists the outflow in the tooltip even when the range has none to draw', async () => {
+    const chart = await openCashFlowBars([['2026-10-01', 1200, 0]])
+    let column!: Column
+    await waitFor(() => {
+      ;[column] = columns(chart)
+      expect(column.inflow).toBeDefined()
+    })
+    expect(column.outflow).toBeUndefined()
 
-    await user.click(within(card).getByRole('button', { name: 'Essentials' }))
-    expect(within(card).getByText('Rent')).toBeInTheDocument()
-    expect(within(card).getByText('Food')).toBeInTheDocument()
-    expect(within(card).queryByText('Fun')).not.toBeInTheDocument()
+    const tooltip = await hoverColumn(chart, column)
+    expect(within(tooltip).getByText(`${t('reports.outflow')}: $0.00`)).toBeInTheDocument()
+  })
 
-    await user.click(within(card).getByRole('button', { name: t('common.back') }))
-    expect(within(card).getByRole('button', { name: 'Essentials' })).toBeInTheDocument()
+  it('shows a zero net flow in the tooltip for a break-even period', async () => {
+    const chart = await openCashFlowBars([['2026-10-01', 2000, 2000]])
+    let column!: Column
+    await waitFor(() => {
+      ;[column] = columns(chart)
+      expect(column.inflow!.y).toBeCloseTo(zeroLine(chart))
+    })
 
-    await user.click(within(card).getByRole('button', { name: 'Essentials' }))
-    await user.click(within(card).getByRole('button', { name: t('reports.byIncome') }))
-    expect(within(card).queryByRole('button', { name: t('common.back') })).not.toBeInTheDocument()
+    const tooltip = await hoverColumn(chart, column)
+    expect(within(tooltip).getByText(`${t('reports.netFlow')}: $0.00`)).toHaveStyle({ color: 'var(--muted-foreground)' })
+  })
+
+  it('leaves a month with no cash flow empty, without a bar or a tooltip', async () => {
+    const chart = await openCashFlowBars([
+      ['2026-10-01', 3000, 2500],
+      ['2026-11-01', 0, 0],
+      ['2026-12-01', 2500, 3000],
+    ])
+    let surplus!: Column
+    await waitFor(() => {
+      const drawn = columns(chart)
+      expect(drawn.map(({ x, width }) => x + width / 2)).toEqual([
+        periodX(chart, '2026-10-01'),
+        periodX(chart, '2026-12-01'),
+      ])
+      ;[surplus] = drawn
+    })
+
+    const tooltip = await hoverColumn(chart, surplus)
+    expect(tooltip).toHaveTextContent('2026-10-01')
+
+    hoverAt(chart, periodX(chart, '2026-11-01'))
+    await waitFor(() => expect(tooltip).toBeEmptyDOMElement())
+  })
+
+  it('draws no bars and no tooltip when the whole range has no cash flow', async () => {
+    api.reports.cashFlow.mockResolvedValue(report('cash_flow', [
+      { date: '2026-10-01', breakdowns: { inflow: 0, outflow: 0 } },
+      { date: '2026-11-01', breakdowns: { inflow: 0, outflow: 0 } },
+    ]))
+    const container = await openTab('reports.cashFlow')
+    // The balance projection is the tab's area chart; the other one holds the bars.
+    const chart = await waitFor(() => {
+      const found = Array.from(container.querySelectorAll<HTMLElement>('.recharts-wrapper'))
+        .find((wrapper) => !wrapper.querySelector('.recharts-area') && wrapper.querySelector('.recharts-xAxis-tick-labels text'))
+      expect(found).toBeDefined()
+      return found!
+    })
+
+    expect(chart.querySelectorAll('.recharts-bar-rectangle path')).toHaveLength(0)
+    const tooltip = hoverAt(chart, periodX(chart, '2026-10-01'))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(tooltip).toBeEmptyDOMElement()
+  })
+
+  it('masks every tooltip amount in privacy mode', async () => {
+    privacy.on = true
+    const chart = await openCashFlowBars([['2026-10-01', 3000, 2500]])
+    let column!: Column
+    await waitFor(() => {
+      ;[column] = columns(chart)
+      expect(column.outflow).toBeDefined()
+    })
+
+    const tooltip = await hoverColumn(chart, column)
+    expect(within(tooltip).getByText(`${t('reports.inflow')}: ••••`)).toBeInTheDocument()
+    expect(within(tooltip).getByText(`${t('reports.outflow')}: ••••`)).toBeInTheDocument()
+    expect(within(tooltip).getByText(`${t('reports.netFlow')}: ••••`)).toBeInTheDocument()
+    expect(tooltip).not.toHaveTextContent('$')
+  })
+
+  it('keeps the Net Worth bars stacked by sign, without a net flow row', async () => {
+    api.reports.netWorth.mockResolvedValue(
+      report('net_worth', [{ date: '2026-08-01', breakdowns: { accounts: 3000, liabilities: 2500 } }], ['accounts', 'liabilities']),
+    )
+    const chart = await barChart(await openTab())
+    const segments = () => Array.from(chart.querySelectorAll('.recharts-bar-rectangle path'), box)
+      .sort((a, b) => a.y - b.y)
+    await waitFor(() => {
+      const zero = zeroLine(chart)
+      const [assets, debt] = segments()
+
+      expect(assets.y + assets.height).toBeCloseTo(zero)
+      expect(debt.y).toBeCloseTo(zero)
+      expect(assets.height / debt.height).toBeCloseTo(3000 / 2500)
+    })
+
+    const path = chart.querySelector('.recharts-bar-rectangle path')!
+    const tooltip = await hoverColumn(chart, {
+      x: Number(path.getAttribute('x')),
+      width: Number(path.getAttribute('width')),
+    })
+    expect(tooltip).toHaveTextContent(`${t('reports.accounts')}: $3,000.00`)
+    expect(tooltip).toHaveTextContent(`${t('reports.liabilities')}: -$2,500.00`)
+    expect(tooltip).not.toHaveTextContent(t('reports.netFlow'))
+    expect(screen.queryByTestId('cash-flow-net')).not.toBeInTheDocument()
   })
 })
 
@@ -649,7 +818,7 @@ describe('Reports page, income statement tab', () => {
     }
   }
 
-  it('shows the statement, expands a group and sends no compare', async () => {
+  it('shows the statement and expands a group', async () => {
     api.reports.incomeExpenses.mockResolvedValue(statementReport())
     const { user } = renderWithProviders(<ReportsPage />)
     await user.click(screen.getByRole('button', { name: t('reports.incomeStatement') }))
@@ -670,9 +839,6 @@ describe('Reports page, income statement tab', () => {
     await user.click(housing)
     expect(housing).toHaveAttribute('aria-expanded', 'false')
     await user.click(housing)
-
-    expect(screen.queryByTestId('reports-compare')).not.toBeInTheDocument()
-    expect(api.reports.incomeExpenses.mock.calls.at(-1)?.[7]).toBeUndefined()
   })
 
   it('asks for explicit dates, so the statement shows actuals only', async () => {

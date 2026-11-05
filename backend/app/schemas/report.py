@@ -67,19 +67,9 @@ class CategoryTrendItem(BaseModel):
     series: list[ReportDataPoint]
 
 
-class ReportComparison(BaseModel):
-    start_date: str
-    end_date: str
-    summary: ReportSummary
-    composition: list[ReportCompositionItem] = []
-    # Actuals-only composition of the current window, comparable to ``composition``.
-    current_composition: list[ReportCompositionItem] = []
-
-
 class ReportResponse(BaseModel):
     summary: ReportSummary
     trend: list[ReportDataPoint]
     meta: ReportMeta
     composition: list[ReportCompositionItem] = []
     category_trend: list[CategoryTrendItem] = []
-    comparison: ReportComparison | None = None

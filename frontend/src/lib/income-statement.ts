@@ -52,9 +52,11 @@ export function buildIncomeStatement(trend: ReportDataPoint[], labels: Statement
   const periods = trend.map((point) => point.date)
   const zeros = () => periods.map(() => 0)
 
+  type Collected = { item: ReportCompositionItem; values: number[] }
+
   // Sum the amounts per category, keeping one value per period.
   const collect = (side: ReportCompositionItem['group']) => {
-    const categories = new Map<string, { item: ReportCompositionItem; values: number[] }>()
+    const categories = new Map<string, Collected>()
     trend.forEach((point, index) => {
       for (const item of point.composition ?? []) {
         if (item.group !== side) continue
@@ -64,7 +66,15 @@ export function buildIncomeStatement(trend: ReportDataPoint[], labels: Statement
         categories.set(id, entry)
       }
     })
-    return [...categories.values()]
+    return categories
+  }
+
+  // The API already nets refunds against their category, so a period can hold
+  // a negative expense value. The statement reads the response as is.
+  const collected = {
+    income: [...collect('income').values()],
+    expenses: [...collect('expenses').values()],
+    investments: [...collect('investments').values()],
   }
 
   const categoryLabel = (item: ReportCompositionItem) =>
@@ -80,7 +90,7 @@ export function buildIncomeStatement(trend: ReportDataPoint[], labels: Statement
   // A section with its groups (depth 1) and their categories (depth 2).
   const groupedSection = (side: 'income' | 'expenses', label: string): { section: StatementLine; lines: StatementLine[] } => {
     const groups = new Map<string, { group: StatementLine; categories: StatementLine[] }>()
-    for (const { item, values } of collect(side)) {
+    for (const { item, values } of collected[side]) {
       const groupId = item.group_id ?? NO_GROUP_ID
       const groupKey = `${side}:g:${groupId}`
       let entry = groups.get(groupKey)
@@ -134,7 +144,7 @@ export function buildIncomeStatement(trend: ReportDataPoint[], labels: Statement
     values: subValues(income.section.values, expenses.section.values),
   })
 
-  const investmentItems = collect('investments')
+  const investmentItems = collected.investments
   const investmentLines = investmentItems
     .map(({ item, values }) =>
       line({

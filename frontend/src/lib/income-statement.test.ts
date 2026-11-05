@@ -124,6 +124,31 @@ describe('buildIncomeStatement', () => {
   })
 })
 
+describe('buildIncomeStatement refunds', () => {
+  it('reads the values the API already netted, including a negative refund-only period', () => {
+    const { lines } = buildIncomeStatement(
+      [
+        point('2026-01', [item('groceries', 'expenses', 110, 'food')]),
+        point('2026-02', [item('groceries', 'expenses', -40, 'food'), item('salary', 'income', 800, 'work')]),
+      ],
+      labels,
+    )
+    expect(find(lines, 'expenses:g:food:c:groceries')?.values).toEqual([110, -40])
+    expect(find(lines, 'income')?.total).toBe(800)
+    expect(find(lines, 'expenses')?.total).toBe(70)
+    expect(find(lines, 'result')?.total).toBe(730)
+  })
+
+  it('leaves an uncategorized credit as revenue', () => {
+    const { lines } = buildIncomeStatement(
+      [point('2026-01', [item('uncategorized', 'income', 30), item('uncategorized', 'expenses', 20)])],
+      labels,
+    )
+    expect(find(lines, 'income')?.total).toBe(30)
+    expect(find(lines, 'expenses')?.total).toBe(20)
+  })
+})
+
 describe('formatBucketLabel', () => {
   it('shows the Monday of an ISO week', () => {
     expect(formatBucketLabel('2026-W44', 'weekly', 'en-US')).toBe('Oct 26, 2026')

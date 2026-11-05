@@ -17,13 +17,15 @@ import {
   Tooltip,
   Legend,
   ReferenceLine,
+  Rectangle,
   ResponsiveContainer,
+  type BarShapeProps,
 } from 'recharts'
 import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, Download, HelpCircle, X } from 'lucide-react'
 import { reports } from '@/lib/api'
 import { extractApiError } from '@/lib/api-errors'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { PageHeader } from '@/components/page-header'
@@ -31,18 +33,14 @@ import { CashflowSankey } from '@/components/reports/CashflowSankey'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
-import type { ReportResponse, CategoryTrendItem, ReportCompareMode } from '@/types'
-import { formatCurrency, formatCompact } from '@/lib/format'
-import { formatDateRange } from '@/lib/date-range-format'
-import { groupComposition, type GroupSlice } from '@/lib/composition-groups'
-import { buildComparisonRows, deltaColorClass, deltaPercent } from '@/lib/report-comparison'
-import { CategoryStackChart } from '@/components/reports/CategoryStackChart'
-import { PeriodComparisonTable } from '@/components/reports/PeriodComparisonTable'
-import { IncomeStatementTable } from '@/components/reports/IncomeStatementTable'
-import { buildIncomeStatement, buildStatementCsv, formatBucketLabel } from '@/lib/income-statement'
+import type { ReportResponse, CategoryTrendItem } from '@/types'
+import { formatCompactCurrency, formatCurrency } from '@/lib/format'
+import { cashFlowBar, cashFlowTopSeries } from '@/lib/cash-flow-bars'
 import { localDateString, todayInTimezone } from '@/lib/date-utils'
 import { monthLabel } from '@/lib/month-utils'
 import { currentWindow, periodWindow, windowMonths, type PeriodPreset } from '@/lib/report-period'
+import { IncomeStatementTable } from '@/components/reports/IncomeStatementTable'
+import { buildIncomeStatement, buildStatementCsv, formatBucketLabel } from '@/lib/income-statement'
 import { useEffectiveTimezone } from '@/hooks/use-timezone'
 import { WorkspaceContext } from '@/contexts/workspace-context'
 import {
@@ -174,16 +172,6 @@ interface ReportTab {
   fallbackInterval: string
 }
 
-/** Download the income statement as a UTF-8 CSV (with BOM) of raw numbers. */
-function downloadStatementCsv(csv: string, filename: string) {
-  const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  link.click()
-  URL.revokeObjectURL(url)
-}
-
 const REPORT_TABS: ReportTab[] = [
   {
     key: 'net_worth', labelKey: 'reports.netWorth', enabled: true,
@@ -211,6 +199,16 @@ const REPORT_TABS: ReportTab[] = [
     supportsCustomRange: true, fallbackRangeKey: '3m', fallbackInterval: 'monthly',
   },
 ]
+
+/** Download the income statement as a UTF-8 CSV (with BOM) of raw numbers. */
+function downloadStatementCsv(csv: string, filename: string) {
+  const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
 
 /** The range last used on `tab`, if it is still one the tab offers. */
 function storedReportsRange(tab: ReportTab): ReportsRange | null {
@@ -271,25 +269,10 @@ export default function ReportsPage() {
     saveReportsRange(activeTab, { rangeKey, from: customFrom, to: customTo, interval, periodOffset })
   }, [activeTab, rangeKey, customFrom, customTo, interval, periodOffset])
   const [compositionView, setCompositionView] = useState<string>('netWorth')
-  // Category group the donut is narrowed to (Income vs Expenses, By Income / By Expenses).
-  const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null)
-
-  // Change the composition view and leave any narrowed group.
-  const changeCompositionView = (view: string) => {
-    setCompositionView(view)
-    setSelectedGroupKey(null)
-  }
   const [sparklineView, setSparklineView] = useState<'byExpenses' | 'byIncome'>('byExpenses')
   const [sparklinePage, setSparklinePage] = useState(0)
-  const [stackMode, setStackMode] = useState<'absolute' | 'percent'>('absolute')
-  const [compareMode, setCompareMode] = useState<ReportCompareMode | 'off'>('off')
   const [cashFlowBaseline, setCashFlowBaseline] = useState(false)
-  const [selectedDate, setSelectedDateState] = useState<string | null>(null)
-  // Pick a bar (or clear it). A group narrowed on another month no longer applies.
-  const setSelectedDate = (date: string | null) => {
-    setSelectedDateState(date)
-    setSelectedGroupKey(null)
-  }
+  const [selectedDate, setSelectedDate] = useState<string | null>(null)
   // Active Collection filter (issue #105): scope all report tabs to its
   // accounts; net worth also includes the collection's wallets' assets.
   const { activeAccountIds, activeWalletIds } = useCollectionFilter()
@@ -377,7 +360,7 @@ export default function ReportsPage() {
   const handleSelectTab = (key: string) => {
     const nextTab = REPORT_TABS.find((tab) => tab.key === key) ?? REPORT_TABS[0]
     setActiveTab(key)
-    changeCompositionView(key === 'net_worth' ? 'netWorth' : 'net')
+    setCompositionView(key === 'net_worth' ? 'netWorth' : 'net')
     setSparklinePage(0)
     setSelectedDate(null)
     const remembered = storedReportsRange(nextTab)
@@ -438,16 +421,13 @@ export default function ReportsPage() {
     setSelectedDate(null)
   }
 
-  // Only the Income vs Expenses tab compares periods.
-  const compare = activeTab === 'income_expenses' && compareMode !== 'off' ? compareMode : undefined
-
   const { data, isLoading, isError, error, refetch } = useQuery<ReportResponse>({
-    queryKey: ['reports', activeTab, rangeKey, months, period ?? null, days ?? null, interval, isCashFlow ? cashFlowBaseline : false, activeAccountIds, activeWalletIds, apiStart ?? null, apiEnd ?? null, compare ?? null],
+    queryKey: ['reports', activeTab, rangeKey, months, period ?? null, days ?? null, interval, isCashFlow ? cashFlowBaseline : false, activeAccountIds, activeWalletIds, apiStart ?? null, apiEnd ?? null],
     queryFn: () =>
       isCashFlow
         ? reports.cashFlow(months, interval, cashFlowBaseline, acctIds)
         : activeTab === 'income_expenses' || isMoneyMap || isStatement
-          ? reports.incomeExpenses(months, interval, acctIds, period, days, apiStart, apiEnd, compare)
+          ? reports.incomeExpenses(months, interval, acctIds, period, days, apiStart, apiEnd)
           : reports.netWorth(months, interval, acctIds, walletIds, period, apiStart, apiEnd),
     // Only request a custom report with both committed endpoints.
     enabled: currentTab.enabled && !(noAccounts && activeTab !== 'net_worth') && (!isCustomRange || hasCustomRange),
@@ -477,8 +457,13 @@ export default function ReportsPage() {
       valuePast: isPast || isBoundary ? dp.value : null,
       valueForecast: !isPast ? dp.value : null,
       ...breakdowns,
-    } as Record<string, string | number | null>
+    } as Record<string, string | number | null> & { date: string }
   })
+  // Cash-flow columns are drawn as ranges ending at net flow; see cashFlowBar.
+  type BarChartDatum = Record<string, string | number | null | [number, number]> & { date: string }
+  const barChartData: BarChartDatum[] = chartData.map((point): BarChartDatum =>
+    meta?.type === 'cash_flow' ? { ...point, ...cashFlowBar(point.inflow, point.outflow) } : point,
+  )
   const netWorthDomain = getNetWorthDomain(
     chartData
       .map((point) => point.value)
@@ -539,17 +524,8 @@ export default function ReportsPage() {
 
   const compositionBreakdownData = snapshotBreakdownData ?? breakdownData
 
-  // With a comparison on, the hero shows the net change against it instead of
-  // the change since the start of the window.
-  const comparison = data?.comparison ?? null
-  const heroChangeAmount = comparison && summary
-    ? summary.primary_value - comparison.summary.primary_value
-    : summary?.change_amount ?? 0
-  const heroChangePercent = comparison && summary
-    ? deltaPercent(summary.primary_value, comparison.summary.primary_value)
-    : summary?.change_percent ?? null
-  const changePrefix = heroChangeAmount >= 0 ? '+' : ''
-  const changeColor = heroChangeAmount >= 0 ? 'text-emerald-600' : 'text-rose-500'
+  const changePrefix = (summary?.change_amount ?? 0) >= 0 ? '+' : ''
+  const changeColor = (summary?.change_amount ?? 0) >= 0 ? 'text-emerald-600' : 'text-rose-500'
 
   const tooltipStyle = {
     background: 'var(--card)',
@@ -750,29 +726,6 @@ export default function ReportsPage() {
     return result
   })()
 
-  // Group the donut by category group on the Income vs Expenses By Income / By Expenses views.
-  const groupDonutActive =
-    activeTab === 'income_expenses' && (compositionView === 'byIncome' || compositionView === 'byExpenses')
-  const groupSlices: GroupSlice[] = groupDonutActive
-    ? groupComposition(activeComposition, compositionView === 'byIncome' ? 'income' : 'expenses', {
-        noGroup: t('reports.noGroup'),
-        uncategorized: t('reports.uncategorized'),
-      })
-    : []
-  const selectedGroup = groupSlices.find((g) => g.key === selectedGroupKey) ?? null
-  const canSelectGroup = groupDonutActive && !selectedGroup
-
-  type DonutSlice = { name: string; value: number; color: string; children?: { name: string; value: number; color: string }[] }
-  const effectiveInner: DonutSlice[] = groupDonutActive
-    ? selectedGroup ? selectedGroup.children : groupSlices
-    : innerDonutData
-  const effectiveOuter: DonutSlice[] = groupDonutActive
-    ? selectedGroup ? [] : groupSlices.flatMap((g) => g.children)
-    : outerDonutData
-  const effectiveDetail: DonutSlice[] = groupDonutActive
-    ? selectedGroup ? selectedGroup.children : groupSlices
-    : compositionDetail
-
   return (
     <div>
       <PageHeader
@@ -922,33 +875,6 @@ export default function ReportsPage() {
                 </button>
               </div>
             )}
-            {activeTab === 'income_expenses' && (
-              <div
-                className="flex items-center rounded-lg border border-border bg-card overflow-hidden"
-                data-testid="reports-compare"
-              >
-                <span className="px-2 text-xs text-muted-foreground">{t('reports.compare')}</span>
-                {([
-                  ['off', 'compareOff'],
-                  ['previous', 'comparePrevious'],
-                  ['year_ago', 'compareYearAgo'],
-                ] as const).map(([mode, labelKey]) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    aria-pressed={compareMode === mode}
-                    onClick={() => { setCompareMode(mode); setSelectedDate(null) }}
-                    className={`px-2.5 py-1.5 text-xs font-semibold transition-colors ${
-                      compareMode === mode
-                        ? 'bg-primary text-primary-foreground'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-                    }`}
-                  >
-                    {t(`reports.${labelKey}`)}
-                  </button>
-                ))}
-              </div>
-            )}
             <div className={`flex items-center rounded-lg border border-border bg-card overflow-hidden ${isMoneyMap ? 'hidden' : ''}`}>
               {intervalOptions.map((opt) => (
                 <button
@@ -1016,52 +942,7 @@ export default function ReportsPage() {
 
       {!isError && (
       <>
-      {/* Income Statement (DRE) */}
-      {isStatement && (
-        <div className="bg-card rounded-xl border border-border shadow-sm">
-          <div className="px-5 pt-5 pb-3 flex items-center justify-between gap-3">
-            <div>
-              <p className="text-sm font-semibold text-foreground">{t('reports.incomeStatementTitle')}</p>
-              <p className="text-xs text-muted-foreground">{periodLabel}</p>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={isLoading || trend.length === 0}
-              onClick={() =>
-                downloadStatementCsv(
-                  buildStatementCsv(statement, {
-                    period: (date) => formatBucketLabel(date, interval, dateLocale),
-                    total: t('reports.statementTotal'),
-                    share: t('reports.statementShare'),
-                  }),
-                  `income-statement-${activeWindow?.from ?? trend[0].date}-${activeWindow?.to ?? trend[trend.length - 1].date}.csv`,
-                )
-              }
-            >
-              <Download className="h-3.5 w-3.5" />
-              {t('reports.exportCsv')}
-            </Button>
-          </div>
-          <div className="pb-3">
-            {isLoading ? (
-              <div className="px-5"><Skeleton className="h-64 w-full" /></div>
-            ) : trend.length === 0 ? (
-              <p className="text-muted-foreground text-sm text-center py-16">{t('reports.noData')}</p>
-            ) : (
-              <IncomeStatementTable
-                statement={statement}
-                currency={userCurrency}
-                locale={locale}
-                periodLabel={(date) => formatBucketLabel(date, interval, dateLocale)}
-              />
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Hero Card */}
-      {!isStatement && (
       <div className="bg-card rounded-xl border border-border shadow-sm mb-5">
         <div className="px-5 py-4">
           {isLoading ? (
@@ -1083,17 +964,15 @@ export default function ReportsPage() {
                   <p className="text-3xl font-bold tabular-nums text-foreground">
                     {mask(formatCurrency(summary?.primary_value ?? 0, userCurrency, locale))}
                   </p>
-                  {heroChangePercent !== null && (
+                  {summary?.change_percent !== null && summary?.change_percent !== undefined && (
                     <span className={`text-sm font-semibold tabular-nums ${changeColor}`}>
-                      {changePrefix}{heroChangePercent.toFixed(1)}%
+                      {changePrefix}{summary.change_percent.toFixed(1)}%
                     </span>
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  {mask(`${changePrefix}${formatCurrency(heroChangeAmount, userCurrency, locale)}`)}
-                  {' '}{comparison
-                    ? t(compareMode === 'previous' ? 'reports.vsPrevious' : 'reports.vsYearAgo')
-                    : t(meta?.type === 'cash_flow' ? 'reports.vsToday' : 'reports.vsStart')}
+                  {mask(`${changePrefix}${formatCurrency(summary?.change_amount ?? 0, userCurrency, locale)}`)}
+                  {' '}{t(meta?.type === 'cash_flow' ? 'reports.vsToday' : 'reports.vsStart')}
                 </p>
               </div>
               <div className="flex flex-wrap gap-6">
@@ -1111,16 +990,6 @@ export default function ReportsPage() {
                     <p className="text-lg font-bold tabular-nums text-foreground">
                       {mask(formatCurrency(b.value, userCurrency, locale))}
                     </p>
-                    {comparison && (b.key === 'income' || b.key === 'expenses') && (() => {
-                      const previous = comparison.summary.breakdowns.find((c) => c.key === b.key)?.value ?? 0
-                      const delta = b.value - previous
-                      const pct = deltaPercent(b.value, previous)
-                      return (
-                        <p className={`text-[11px] tabular-nums ${deltaColorClass(delta, b.key)}`}>
-                          {mask(`${delta > 0 ? '+' : ''}${formatCurrency(delta, userCurrency, locale)}${pct === null ? '' : ` (${pct > 0 ? '+' : ''}${pct.toFixed(1)}%)`}`)}
-                        </p>
-                      )
-                    })()}
                   </div>
                 ))}
                 {/* Cash flow only: the lowest point of the projection. It keeps
@@ -1160,7 +1029,6 @@ export default function ReportsPage() {
           )}
         </div>
       </div>
-      )}
 
       {/* Flow (Sankey) */}
       {isMoneyMap && (
@@ -1193,6 +1061,50 @@ export default function ReportsPage() {
               <div className="px-2"><Skeleton className="h-[360px] w-full" /></div>
             ) : (
               <CashflowSankey composition={composition} currency={userCurrency} locale={locale} />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Income Statement (DRE) */}
+      {isStatement && (
+        <div className="bg-card rounded-xl border border-border shadow-sm mb-5">
+          <div className="px-5 pt-5 pb-3 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-foreground">{t('reports.incomeStatementTitle')}</p>
+              <p className="text-xs text-muted-foreground">{periodLabel}</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isLoading || trend.length === 0}
+              onClick={() =>
+                downloadStatementCsv(
+                  buildStatementCsv(statement, {
+                    period: (date) => formatBucketLabel(date, interval, dateLocale),
+                    total: t('reports.statementTotal'),
+                    share: t('reports.statementShare'),
+                  }),
+                  `income-statement-${activeWindow?.from ?? trend[0].date}-${activeWindow?.to ?? trend[trend.length - 1].date}.csv`,
+                )
+              }
+            >
+              <Download className="h-3.5 w-3.5" />
+              {t('reports.exportCsv')}
+            </Button>
+          </div>
+          <div className="pb-3">
+            {isLoading ? (
+              <div className="px-5"><Skeleton className="h-64 w-full" /></div>
+            ) : trend.length === 0 ? (
+              <p className="text-muted-foreground text-sm text-center py-16">{t('reports.noData')}</p>
+            ) : (
+              <IncomeStatementTable
+                statement={statement}
+                currency={userCurrency}
+                locale={locale}
+                periodLabel={(date) => formatBucketLabel(date, interval, dateLocale)}
+              />
             )}
           </div>
         </div>
@@ -1275,7 +1187,7 @@ export default function ReportsPage() {
                       tickFormatter={(v) => {
                         if (privacyMode) return ''
                         if (v === 0) return '0'
-                        return formatCompact(v, userCurrency, locale)
+                        return formatCompactCurrency(v, userCurrency, locale)
                       }}
                       tick={{ fontSize: 10, fill: 'var(--muted-foreground)' }}
                       axisLine={false}
@@ -1375,7 +1287,7 @@ export default function ReportsPage() {
                   tickFormatter={(v) => {
                     if (privacyMode) return ''
                     if (v === 0) return '0'
-                    return formatCompact(v, userCurrency, locale)
+                    return formatCompactCurrency(v, userCurrency, locale)
                   }}
                   tick={{ fontSize: 10, fill: 'var(--muted-foreground)' }}
                   axisLine={false}
@@ -1498,7 +1410,7 @@ export default function ReportsPage() {
                 <button
                   key={opt}
                   type="button"
-                  onClick={() => changeCompositionView(opt)}
+                  onClick={() => setCompositionView(opt)}
                   className={`px-2 py-1 text-[11px] font-semibold text-center transition-colors ${
                     compositionView === opt
                       ? 'bg-primary text-primary-foreground'
@@ -1532,51 +1444,16 @@ export default function ReportsPage() {
                   ))}
                 </div>
               </div>
-            ) : effectiveInner.length > 0 ? (
+            ) : innerDonutData.length > 0 ? (
                 (() => {
-                  const hasOuter = effectiveOuter.length > 0
-                  const donutTotal = effectiveInner.reduce((s, d) => s + d.value, 0)
-                  const morePopover = (hiddenCount: number) =>
-                    hiddenCount > 0 && (
-                              
-                                <Popover>
-                                  <PopoverTrigger asChild>
-                                    <button
-                                      type="button"
-                                      className="text-[11px] font-semibold text-primary hover:text-primary/80 transition-colors"
-                                    >
-                                      +{hiddenCount} more
-                                    </button>
-                                  </PopoverTrigger>
-                                  <PopoverContent align="center" side="top" sideOffset={8} className="w-64 p-3">
-                                    <p className="text-xs font-semibold text-foreground mb-2">
-                                      {t('reports.composition')}
-                                    </p>
-                                    <div className="flex flex-col gap-1.5 max-h-72 overflow-y-auto pr-2">
-                                      {effectiveDetail.map((d, i) => {
-                                        const pct = donutTotal > 0 ? ((d.value / donutTotal) * 100).toFixed(1) : '0'
-                                        return (
-                                          <div key={`${i}-${d.name}`} className="flex items-center gap-2">
-                                            <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
-                                            <span className="text-[11px] text-muted-foreground flex-1 truncate">
-                                              {d.name.length > 25 ? d.name.slice(0, 22) + '…' : d.name}
-                                            </span>
-                                            <span className="text-xs text-muted-foreground shrink-0">
-                                              {privacyMode ? MASK : `${formatCurrency(d.value, userCurrency, locale)} (${pct}%)`}
-                                            </span>
-                                          </div>
-                                        )
-                                      })}
-                                    </div>
-                                  </PopoverContent>
-                                </Popover>
-                                                  )
+                  const hasOuter = outerDonutData.length > 0
+                  const donutTotal = innerDonutData.reduce((s, d) => s + d.value, 0)
                   return (
                     <div className="flex flex-col items-center">
                       <div className="relative" style={{ width: 200, height: 200 }}>
                         <PieChart width={200} height={200}>
                             <Pie
-                              data={effectiveInner}
+                              data={innerDonutData}
                               cx="50%"
                               cy="50%"
                               innerRadius={55}
@@ -1585,18 +1462,14 @@ export default function ReportsPage() {
                               dataKey="value"
                               stroke="var(--card)"
                               strokeWidth={hasOuter ? 2 : 0}
-                              style={canSelectGroup ? { cursor: 'pointer' } : undefined}
-                              onClick={(_, idx) => {
-                                if (canSelectGroup) setSelectedGroupKey(groupSlices[idx]?.key ?? null)
-                              }}
                             >
-                              {effectiveInner.map((entry, idx) => (
+                              {innerDonutData.map((entry, idx) => (
                                 <Cell key={idx} fill={entry.color} />
                               ))}
                             </Pie>
                             {hasOuter && (
                               <Pie
-                                data={effectiveOuter}
+                                data={outerDonutData}
                                 cx="50%"
                                 cy="50%"
                                 innerRadius={64}
@@ -1606,7 +1479,7 @@ export default function ReportsPage() {
                                 stroke="var(--card)"
                                 strokeWidth={2}
                               >
-                                {effectiveOuter.map((entry, idx) => (
+                                {outerDonutData.map((entry, idx) => (
                                   <Cell key={idx} fill={entry.color} />
                                 ))}
                               </Pie>
@@ -1654,8 +1527,8 @@ export default function ReportsPage() {
                             />
                         </PieChart>
                         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style={{ zIndex: 0 }}>
-                          <span className="text-[10px] text-muted-foreground max-w-[90px] truncate">
-                            {selectedGroup ? selectedGroup.name : compositionView === 'assetsAndAccounts'
+                          <span className="text-[10px] text-muted-foreground">
+                            {compositionView === 'assetsAndAccounts'
                               ? t(isHistoricalSnapshot ? 'reports.youOwned' : 'reports.youOwn', { defaultValue: isHistoricalSnapshot ? 'You Owned' : 'You Own' })
                               : compositionView === 'liabilities'
                                 ? t(isHistoricalSnapshot ? 'reports.youOwed' : 'reports.youOwe', { defaultValue: isHistoricalSnapshot ? 'You Owed' : 'You Owe' })
@@ -1665,66 +1538,35 @@ export default function ReportsPage() {
                                 : t(currentTab.labelKey)}
                           </span>
                           <span className="text-base font-bold text-foreground tabular-nums">
-                            {mask(formatCompact(
-                              selectedGroup ? selectedGroup.value : snapshotTrendPoint
+                            {mask(formatCompactCurrency(
+                              snapshotTrendPoint
                                 ? compositionView === 'netWorth' || compositionView === 'net' || !compositionView
                                   ? snapshotTrendPoint.value
-                                  : effectiveInner.reduce((s, d) => s + d.value, 0)
+                                  : innerDonutData.reduce((s, d) => s + d.value, 0)
                                 : compositionView === 'netWorth' || compositionView === 'net' || !compositionView
                                   ? meta?.type === 'cash_flow'
                                     ? (summary?.change_amount ?? 0)
                                     : (summary?.primary_value ?? 0)
-                                  : effectiveInner.reduce((s, d) => s + d.value, 0),
+                                  : innerDonutData.reduce((s, d) => s + d.value, 0),
                               userCurrency, locale
                             ))}
                           </span>
                         </div>
                       </div>
                       <div key={compositionView} className="flex flex-col items-center gap-1 px-3 mt-1 w-full">
-                        {selectedGroup && (
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedGroupKey(null)}
-                              className="flex items-center gap-0.5 text-[11px] font-semibold text-primary hover:text-primary/80 transition-colors"
-                            >
-                              <ChevronLeft className="h-3 w-3" />
-                              {t('common.back')}
-                            </button>
-                            <span className="text-[11px] font-semibold text-foreground">{selectedGroup.name}</span>
-                          </div>
-                        )}
-                        {canSelectGroup && (
-                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('reports.byGroup')}</span>
-                        )}
-                        <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 items-center">
-                          {(groupDonutActive ? effectiveInner.slice(0, 8) : effectiveInner).map((d, i) => {
-                            const label = (
-                              <>
-                                <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
-                                <span className="text-[11px] text-muted-foreground whitespace-nowrap">
-                                  {d.name.length > 30 ? d.name.slice(0, 27) + '…' : d.name}
-                                </span>
-                              </>
-                            )
-                            return canSelectGroup ? (
-                              <button
-                                key={`${i}-${d.name}`}
-                                type="button"
-                                onClick={() => setSelectedGroupKey(groupSlices[i]?.key ?? null)}
-                                className="flex items-center gap-1.5 hover:text-foreground"
-                              >
-                                {label}
-                              </button>
-                            ) : (
-                              <div key={`${i}-${d.name}`} className="flex items-center gap-1.5">{label}</div>
-                            )
-                          })}
-                          {groupDonutActive && morePopover(effectiveDetail.length - 8)}
+                        <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
+                          {innerDonutData.map((d, i) => (
+                            <div key={`${i}-${d.name}`} className="flex items-center gap-1.5">
+                              <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
+                              <span className="text-[11px] text-muted-foreground whitespace-nowrap">
+                                {d.name.length > 30 ? d.name.slice(0, 27) + '…' : d.name}
+                              </span>
+                            </div>
+                          ))}
                         </div>
-                        {hasOuter && !groupDonutActive && (() => {
-                          const visible = effectiveOuter.slice(0, 6)
-                          const hiddenCount = effectiveDetail.length - visible.length
+                        {hasOuter && (() => {
+                          const visible = outerDonutData.slice(0, 6)
+                          const hiddenCount = compositionDetail.length - visible.length
                           return (
                             <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 items-center">
                               {visible.map((d, i) => (
@@ -1735,7 +1577,39 @@ export default function ReportsPage() {
                                   </span>
                                 </div>
                               ))}
-                              {morePopover(hiddenCount)}
+                              {hiddenCount > 0 && (
+                                <Popover>
+                                  <PopoverTrigger asChild>
+                                    <button
+                                      type="button"
+                                      className="text-[11px] font-semibold text-primary hover:text-primary/80 transition-colors"
+                                    >
+                                      +{hiddenCount} more
+                                    </button>
+                                  </PopoverTrigger>
+                                  <PopoverContent align="center" side="top" sideOffset={8} className="w-64 p-3">
+                                    <p className="text-xs font-semibold text-foreground mb-2">
+                                      {t('reports.composition')}
+                                    </p>
+                                    <div className="flex flex-col gap-1.5 max-h-72 overflow-y-auto pr-2">
+                                      {compositionDetail.map((d, i) => {
+                                        const pct = donutTotal > 0 ? ((d.value / donutTotal) * 100).toFixed(1) : '0'
+                                        return (
+                                          <div key={`${i}-${d.name}`} className="flex items-center gap-2">
+                                            <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
+                                            <span className="text-[11px] text-muted-foreground flex-1 truncate">
+                                              {d.name.length > 25 ? d.name.slice(0, 22) + '…' : d.name}
+                                            </span>
+                                            <span className="text-xs text-muted-foreground shrink-0">
+                                              {privacyMode ? MASK : `${formatCurrency(d.value, userCurrency, locale)} (${pct}%)`}
+                                            </span>
+                                          </div>
+                                        )
+                                      })}
+                                    </div>
+                                  </PopoverContent>
+                                </Popover>
+                              )}
                             </div>
                           )
                         })()}
@@ -1873,7 +1747,7 @@ export default function ReportsPage() {
                                 </span>
                               </div>
                               <p className="text-xs font-bold tabular-nums text-foreground mb-1">
-                                {mask(formatCompact(item.total, userCurrency, locale))}
+                                {mask(formatCompactCurrency(item.total, userCurrency, locale))}
                               </p>
                               <div style={{ height: 48 }}>
                                 <ResponsiveContainer width="100%" height="100%">
@@ -1923,13 +1797,13 @@ export default function ReportsPage() {
             ) : chartData.length > 0 && meta ? (
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
-                  data={chartData}
+                  data={barChartData}
                   margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
-                  stackOffset="sign"
+                  stackOffset={meta.type === 'cash_flow' ? 'none' : 'sign'}
                   onClick={(payload) => {
                     const date = payload?.activeLabel as string | undefined
                     if (!date) return
-                    setSelectedDate(selectedDate === date ? null : date)
+                    setSelectedDate((prev) => (prev === date ? null : date))
                   }}
                   style={{ cursor: 'pointer' }}
                 >
@@ -1944,7 +1818,7 @@ export default function ReportsPage() {
                     tickFormatter={(v) => {
                       if (privacyMode) return ''
                       if (v === 0) return '0'
-                      return formatCompact(v, userCurrency, locale)
+                      return formatCompactCurrency(v, userCurrency, locale)
                     }}
                     tick={{ fontSize: 10, fill: 'var(--muted-foreground)' }}
                     axisLine={false}
@@ -1956,17 +1830,55 @@ export default function ReportsPage() {
                   <Tooltip
                     content={({ active, payload, label }) => {
                       if (!active || !payload) return null
-                      const items = payload.filter((p) => p.value !== null && p.value !== undefined && (p.value as number) !== 0)
+                      const items = payload.filter((p) => {
+                        if (p.value === null || p.value === undefined) return false
+                        return Array.isArray(p.value)
+                          ? p.value[0] !== p.value[1]
+                          : (p.value as number) !== 0
+                      })
+                      // A period with nothing to draw, e.g. a month with no
+                      // cash flow at all, gets no tooltip.
                       if (items.length === 0) return null
+                      const hovered = items[0].payload as BarChartDatum
+                      const cashFlowPoint = meta.type === 'cash_flow'
+                        ? cashFlowBar(hovered.inflowAmount, hovered.outflowAmount)
+                        : null
+                      const netFlowColor = !cashFlowPoint || cashFlowPoint.netFlow === 0
+                        ? 'var(--muted-foreground)'
+                        : cashFlowPoint.netFlow > 0 ? '#10B981' : '#F43F5E'
+                      // Cash-flow bars carry ranges, and a zero-height segment
+                      // drops out of `items`; list both amounts from the period
+                      // itself so the net flow always has both of its terms.
+                      const rows = cashFlowPoint
+                        ? [
+                            { key: 'inflow', name: 'inflow', color: '#10B981', value: cashFlowPoint.inflowAmount },
+                            { key: 'outflow', name: 'outflow', color: '#F43F5E', value: -cashFlowPoint.outflowAmount },
+                          ]
+                        : items.map((p) => ({
+                            key: p.dataKey as string,
+                            name: p.name,
+                            color: p.color,
+                            value: p.value as number,
+                          }))
                       return (
                         <div style={tooltipStyle} className="px-3 py-2">
                           <p className="text-xs font-medium mb-1">{label}</p>
-                          {items.map((p) => (
-                            <p key={p.dataKey as string} className="text-xs" style={{ color: p.color }}>
-                              {t(`reports.${p.dataKey}`, { defaultValue: p.name })}:{' '}
-                              {privacyMode ? MASK : formatCurrency(p.value as number, userCurrency, locale)}
+                          {rows.map((row) => (
+                            <p key={row.key} className="text-xs" style={{ color: row.color }}>
+                              {t(`reports.${row.key}`, { defaultValue: row.name })}:{' '}
+                              {privacyMode ? MASK : formatCurrency(row.value, userCurrency, locale)}
                             </p>
                           ))}
+                          {cashFlowPoint && (
+                            <p
+                              data-testid="cash-flow-net"
+                              className="text-xs font-medium"
+                              style={{ color: netFlowColor }}
+                            >
+                              {t('reports.netFlow')}:{' '}
+                              {privacyMode ? MASK : formatCurrency(cashFlowPoint.netFlow, userCurrency, locale)}
+                            </p>
+                          )}
                         </div>
                       )
                     }}
@@ -1986,17 +1898,23 @@ export default function ReportsPage() {
                         ]
                       : meta.series_keys.map((k) => ({ key: k, color: colorMap[k] || '#6366F1' }))
                     const filteredSeries = allSeries.filter(({ key }) =>
-                      chartData.some((d) => { const v = d[key]; return typeof v === 'number' && v !== 0 })
+                      barChartData.some((d) => {
+                        const v = d[key]
+                        return Array.isArray(v)
+                          ? v[0] !== v[1]
+                          : typeof v === 'number' && v !== 0
+                      })
                     )
                     const positiveKeys = isNetWorth ? filteredSeries.filter(({ key }) => !NEGATIVE_SERIES.has(key)) : filteredSeries
                     const negativeKeys = isNetWorth ? filteredSeries.filter(({ key }) => NEGATIVE_SERIES.has(key)) : []
                     const lastPositiveKey = positiveKeys.at(-1)?.key ?? null
                     const lastNegativeKey = negativeKeys.at(-1)?.key ?? null
                     return filteredSeries.map(({ key, color }) => {
+                      const isCashFlowChart = meta.type === 'cash_flow'
                       let radius: [number, number, number, number] = [0, 0, 0, 0]
                       if (isNetWorth && NEGATIVE_SERIES.has(key) && key === lastNegativeKey) {
                         radius = [4, 4, 0, 0]
-                      } else if (key === lastPositiveKey) {
+                      } else if (!isCashFlowChart && key === lastPositiveKey) {
                         radius = [4, 4, 0, 0]
                       }
                       return (
@@ -2007,8 +1925,16 @@ export default function ReportsPage() {
                           fill={color}
                           radius={radius}
                           maxBarSize={32}
+                          shape={isCashFlowChart
+                            ? (props: BarShapeProps) => (
+                                <Rectangle
+                                  {...props}
+                                  radius={cashFlowTopSeries(props.payload) === key ? [4, 4, 0, 0] : 0}
+                                />
+                              )
+                            : undefined}
                         >
-                          {selectedDate && chartData.map((d) => (
+                          {selectedDate && barChartData.map((d) => (
                             <Cell
                               key={d.date}
                               fill={color}
@@ -2043,110 +1969,6 @@ export default function ReportsPage() {
           )}
         </div>
       </div>
-      {/* Spending by category over time */}
-      {meta?.type === 'income_expenses' && (
-        <div className="bg-card rounded-xl border border-border shadow-sm mt-5" data-testid="category-stack-card">
-          <div className="flex flex-wrap items-center justify-between gap-2 px-5 pt-4 pb-2">
-            <h3 className="text-sm font-semibold text-foreground">
-              {t(sparklineView === 'byIncome' ? 'reports.incomeByCategory' : 'reports.spendingByCategory')}
-            </h3>
-            <div className="flex items-center gap-2">
-              <div className="flex items-center rounded-lg border border-border bg-muted/30 overflow-hidden">
-                {(['byExpenses', 'byIncome'] as const).map((opt) => (
-                  <button
-                    key={opt}
-                    onClick={() => { setSparklineView(opt); setSparklinePage(0) }}
-                    className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${
-                      sparklineView === opt
-                        ? 'bg-primary text-primary-foreground'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-                    }`}
-                  >
-                    {t(`reports.${opt}`)}
-                  </button>
-                ))}
-              </div>
-              <div className="flex items-center rounded-lg border border-border bg-muted/30 overflow-hidden">
-                {(['absolute', 'percent'] as const).map((opt) => (
-                  <button
-                    key={opt}
-                    type="button"
-                    aria-pressed={stackMode === opt}
-                    onClick={() => setStackMode(opt)}
-                    className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${
-                      stackMode === opt
-                        ? 'bg-primary text-primary-foreground'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-                    }`}
-                  >
-                    {t(opt === 'absolute' ? 'reports.stackAbsolute' : 'reports.stackPercent')}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="px-1 pb-4" style={{ height: 320 }}>
-            {isLoading ? (
-              <div className="px-4 h-full">
-                <Skeleton className="h-full w-full" />
-              </div>
-            ) : (
-              <CategoryStackChart
-                items={(data?.category_trend ?? []).filter(
-                  (c) => c.group === (sparklineView === 'byIncome' ? 'income' : 'expenses'),
-                )}
-                mode={stackMode}
-                currency={userCurrency}
-                locale={locale}
-                interval={interval}
-                dateLocale={dateLocale}
-              />
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Period comparison */}
-      {meta?.type === 'income_expenses' && comparison && (() => {
-        const side = sparklineView === 'byIncome' ? 'income' : 'expenses'
-        const rows = buildComparisonRows(comparison.current_composition, comparison.composition, side)
-        return (
-          <div className="bg-card rounded-xl border border-border shadow-sm mt-5">
-            <div className="flex flex-wrap items-center justify-between gap-2 px-5 pt-4 pb-2">
-              <div>
-                <h3 className="text-sm font-semibold text-foreground">{t('reports.periodComparison')}</h3>
-                <p className="text-xs text-muted-foreground">
-                  {t('reports.comparedWith', {
-                    range: formatDateRange(comparison.start_date, comparison.end_date, dateLocale),
-                  })}
-                </p>
-              </div>
-              <div className="flex items-center rounded-lg border border-border bg-muted/30 overflow-hidden">
-                {(['byExpenses', 'byIncome'] as const).map((opt) => (
-                  <button
-                    key={opt}
-                    onClick={() => { setSparklineView(opt); setSparklinePage(0) }}
-                    className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${
-                      sparklineView === opt
-                        ? 'bg-primary text-primary-foreground'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-                    }`}
-                  >
-                    {t(`reports.${opt}`)}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="px-5 pb-4">
-              {rows.length === 0 ? (
-                <p className="text-muted-foreground text-sm text-center py-16">{t('reports.noData')}</p>
-              ) : (
-                <PeriodComparisonTable rows={rows} side={side} currency={userCurrency} locale={locale} />
-              )}
-            </div>
-          </div>
-        )
-      })()}
       </>
       )}
       </>

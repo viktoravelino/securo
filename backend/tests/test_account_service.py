@@ -24,7 +24,7 @@ from app.models.recurring_transaction import RecurringTransaction
 from app.models.transaction import Transaction
 from app.schemas.account import AccountCreate, AccountUpdate
 from app.services.account_service import (
-    _simplefin_to_internal_balance,
+    _provider_to_internal_balance,
     create_account,
     close_account,
     delete_account,
@@ -943,8 +943,8 @@ async def test_get_account_summary_bill_nets_paired_payment_when_cycle_starts_fl
     assert summary is not None
     # 1000 (charge) - 100 (refund) - 400 (intermediate payment) = 500
     assert summary["monthly_expenses"] == pytest.approx(500.0)
-    # the payment is not income; the refund still is
-    assert summary["monthly_income"] == pytest.approx(100.0)
+    # neither the payment nor the refund is income: both are netted into the bill
+    assert summary["monthly_income"] == pytest.approx(0.0)
 
 
 @pytest.mark.asyncio
@@ -1339,26 +1339,26 @@ async def _make_provider_connection(
     return conn.id
 
 
-def test_simplefin_to_internal_balance_flips_card():
+def test_provider_to_internal_balance_flips_card():
     """SimpleFIN reports card debt as a negative number; normalize to positive."""
-    assert _simplefin_to_internal_balance(
+    assert _provider_to_internal_balance(
         "simplefin", "credit_card", Decimal("-500.00")
     ) == Decimal("500.00")
 
 
-def test_simplefin_to_internal_balance_checking_unchanged():
+def test_provider_to_internal_balance_checking_unchanged():
     """A SimpleFIN non-card balance is already in the right convention."""
-    assert _simplefin_to_internal_balance(
+    assert _provider_to_internal_balance(
         "simplefin", "checking", Decimal("1500.00")
     ) == Decimal("1500.00")
 
 
-def test_simplefin_to_internal_balance_other_provider_unchanged():
+def test_provider_to_internal_balance_other_provider_unchanged():
     """Pluggy/Enable already use positive-for-debt — never flip their cards."""
-    assert _simplefin_to_internal_balance(
+    assert _provider_to_internal_balance(
         "pluggy", "credit_card", Decimal("500.00")
     ) == Decimal("500.00")
-    assert _simplefin_to_internal_balance(
+    assert _provider_to_internal_balance(
         "enable_banking", "credit_card", Decimal("500.00")
     ) == Decimal("500.00")
 
@@ -1452,6 +1452,81 @@ async def test_update_simplefin_type_change_not_crossing_card_keeps_balance(
     assert updated is not None
     assert updated.type == "savings"
     assert updated.balance == Decimal("1500.00")
+
+
+def test_provider_to_internal_balance_flips_loan():
+    assert _provider_to_internal_balance(
+        "simplefin", "loan", Decimal("-250000.00")
+    ) == Decimal("250000.00")
+
+
+def test_provider_to_internal_balance_stores_any_loan_as_positive_debt():
+    for provider in ("enable_banking", "pluggy", "simplefin"):
+        assert _provider_to_internal_balance(
+            provider, "loan", Decimal("-250000.00")
+        ) == Decimal("250000.00")
+        assert _provider_to_internal_balance(
+            provider, "loan", Decimal("250000.00")
+        ) == Decimal("250000.00")
+
+
+def test_provider_to_internal_balance_keeps_checking_raw():
+    """A loan synced before loans existed is stored as checking; its balance
+    must keep the bank's sign so it still shows as debt, not flip to an asset."""
+    assert _provider_to_internal_balance(
+        "enable_banking", "checking", Decimal("-250000.00")
+    ) == Decimal("-250000.00")
+
+
+
+
+
+
+@pytest.mark.asyncio
+async def test_update_simplefin_loan_to_credit_card_keeps_liability_sign(
+    session: AsyncSession, test_user, test_workspace,
+):
+    conn_id = await _make_provider_connection(session, test_user.id, "simplefin")
+    account = await _make_account(
+        session,
+        test_user.id,
+        "SimpleFIN Mortgage",
+        acc_type="loan",
+        balance="250000.00",
+        connection_id=conn_id,
+        external_id="sf-loan-card-1",
+    )
+
+    updated = await update_account(
+        session, account.id, test_workspace.id, AccountUpdate(type="credit_card")
+    )
+
+    assert updated is not None
+    assert updated.balance == Decimal("250000.00")
+    assert serialize_account(updated, None, None)["current_balance"] == pytest.approx(-250000.0)
+
+
+@pytest.mark.asyncio
+async def test_update_simplefin_loan_to_checking_flips_balance_to_asset_sign(
+    session: AsyncSession, test_user, test_workspace,
+):
+    conn_id = await _make_provider_connection(session, test_user.id, "simplefin")
+    account = await _make_account(
+        session,
+        test_user.id,
+        "SimpleFIN Mortgage",
+        acc_type="loan",
+        balance="250000.00",
+        connection_id=conn_id,
+        external_id="sf-loan-checking-1",
+    )
+
+    updated = await update_account(
+        session, account.id, test_workspace.id, AccountUpdate(type="checking")
+    )
+
+    assert updated is not None
+    assert updated.balance == Decimal("-250000.00")
 
 
 # ----- per-account institution resolution (issue #345) ------------------------
@@ -1656,67 +1731,3 @@ def test_clean_logo_url_drops_overlong_urls():
     assert _clean_logo_url("https://long.example/" + "a" * 500) is None
     assert _clean_logo_url("   ") is None
     assert _clean_logo_url(None) is None
-
-
-@pytest.mark.asyncio
-async def test_get_account_summary_nets_negative_debit(session: AsyncSession, test_user, test_workspace):
-    """Debits 314.97, 314.97 and -472.46 total 157.48, matching the balance math."""
-    account = await _make_account(session, test_user.id, "Neg Debit Summary")
-    today = date.today()
-    for amount in (314.97, 314.97, -472.46):
-        await _add_txn(session, test_user.id, account.id, amount, "debit", today)
-
-    summary = await get_account_summary(session, account.id, test_workspace.id)
-    assert summary is not None
-    assert summary["monthly_expenses"] == pytest.approx(157.48)
-    assert summary["current_balance"] == pytest.approx(-157.48)
-
-
-@pytest.mark.asyncio
-async def test_get_account_summary_credit_card_bill_nets_negative_debit(
-    session: AsyncSession, test_user, test_workspace
-):
-    """A card's bill total nets a negative purchase; credits still reduce it."""
-    account = await _make_account(session, test_user.id, "Neg Debit Card", acc_type="credit_card")
-    today = date.today()
-    for amount in (314.97, 314.97, -472.46):
-        await _add_txn(session, test_user.id, account.id, amount, "debit", today)
-    await _add_txn(session, test_user.id, account.id, 7.48, "credit", today)
-
-    summary = await get_account_summary(session, account.id, test_workspace.id)
-    assert summary is not None
-    assert summary["monthly_expenses"] == pytest.approx(150.0)
-
-
-@pytest.mark.asyncio
-async def test_get_account_summary_clamps_refund_only_totals(
-    session: AsyncSession, test_user, test_workspace
-):
-    """Non-card refund-only expenses and a negative credit clamp to 0, pending included."""
-    account = await _make_account(session, test_user.id, "Refund Only Summary")
-    today = date.today()
-    await _add_txn(session, test_user.id, account.id, -472.46, "debit", today)
-    await _add_txn(session, test_user.id, account.id, -30, "credit", today)
-    await _add_txn(session, test_user.id, account.id, -10, "debit", today, status="pending")
-
-    summary = await get_account_summary(session, account.id, test_workspace.id)
-    assert summary is not None
-    assert summary["monthly_expenses"] == 0
-    assert summary["monthly_income"] == 0
-    assert summary["projected_expenses"] == 0
-    assert summary["projected_income"] == 0
-
-
-@pytest.mark.asyncio
-async def test_get_account_summary_pending_negative_debit_nets_projection(
-    session: AsyncSession, test_user, test_workspace
-):
-    """A pending -40 debit offsets a pending 100 debit in the projection."""
-    account = await _make_account(session, test_user.id, "Pending Neg Summary")
-    today = date.today()
-    await _add_txn(session, test_user.id, account.id, 100, "debit", today, status="pending")
-    await _add_txn(session, test_user.id, account.id, -40, "debit", today, status="pending")
-
-    summary = await get_account_summary(session, account.id, test_workspace.id)
-    assert summary is not None
-    assert summary["projected_expenses"] == pytest.approx(60.0)

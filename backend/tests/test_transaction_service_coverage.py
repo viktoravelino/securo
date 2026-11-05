@@ -1033,6 +1033,44 @@ async def test_get_transactions_bill_id_filter(session, test_user, test_workspac
     assert "Outside" not in descs
 
 
+async def test_get_transactions_statement_view_uses_purchase_date_in_accrual_mode(
+    session, test_user, test_workspace, cc_account
+):
+    await _mk_txn(
+        session, test_user, cc_account, description="OctoberPurchase",
+        date=date(2026, 10, 1), effective_date=date(2026, 10, 11),
+    )
+    await _mk_txn(
+        session, test_user, cc_account, description="OutsideCycle",
+        date=date(2026, 10, 5), effective_date=date(2026, 10, 20),
+    )
+
+    rows, _, _ = await get_transactions(
+        session, test_workspace.id, test_user.id,
+        account_ids=[cc_account.id], from_date=date(2026, 9, 4), to_date=date(2026, 10, 4),
+        accounting_mode="accrual", statement_view=True,
+    )
+
+    assert {row.description for row in rows} == {"OctoberPurchase"}
+
+
+async def test_get_transactions_without_statement_view_keeps_accrual_date_filter(
+    session, test_user, test_workspace, cc_account
+):
+    await _mk_txn(
+        session, test_user, cc_account, description="OctoberPurchase",
+        date=date(2026, 10, 1), effective_date=date(2026, 10, 11),
+    )
+
+    rows, _, _ = await get_transactions(
+        session, test_workspace.id, test_user.id,
+        account_ids=[cc_account.id], from_date=date(2026, 9, 4), to_date=date(2026, 10, 4),
+        accounting_mode="accrual",
+    )
+
+    assert rows == []
+
+
 async def test_get_transactions_bill_id_no_dates(session, test_user, test_workspace, cc_account):
     bill = CreditCardBill(
         id=uuid.uuid4(), user_id=test_user.id, workspace_id=test_workspace.id,
@@ -1088,27 +1126,3 @@ async def test_get_transactions_unbilled_only_forward_override(session, test_use
         unbilled_only=True, from_date=date(2025, 5, 1), to_date=date(2025, 5, 31),
     )
     assert "ForwardOverride" in {t.description for t in res}
-
-
-async def test_get_transactions_summary_nets_negative_debit(session, test_user, test_workspace, acct):
-    for amount in ("314.97", "314.97", "-472.46"):
-        await _mk_txn(session, test_user, acct, amount=Decimal(amount), type="debit")
-    _, _, summary = await get_transactions(
-        session, test_workspace.id, test_user.id, include_summary=True
-    )
-    assert summary is not None
-    assert summary["expense"] == Decimal("157.48")
-    assert summary["net"] == Decimal("-157.48")
-
-
-async def test_get_transactions_summary_clamps_refund_only_expense(
-    session, test_user, test_workspace, acct
-):
-    """A refund-only filter shows 0 expense, while net stays signed."""
-    await _mk_txn(session, test_user, acct, amount=Decimal("-50"), type="debit")
-    _, _, summary = await get_transactions(
-        session, test_workspace.id, test_user.id, include_summary=True
-    )
-    assert summary is not None
-    assert summary["expense"] == Decimal("0")
-    assert summary["net"] == Decimal("50")

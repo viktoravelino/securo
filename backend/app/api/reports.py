@@ -10,7 +10,6 @@ from app.core.database import get_async_session
 from app.core.workspace_context import WorkspaceContext, current_workspace
 from app.schemas.report import ReportDataRange, ReportResponse
 from app.services import report_service
-from app.services.report_service import _add_years
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -18,6 +17,18 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 # per-day snapshot fan-out. Ten years covers every realistic personal-finance
 # question and stays inside the existing daily-interval budget.
 _MAX_CUSTOM_RANGE_YEARS = 10
+
+
+def _add_years(value: date, years: int) -> date:
+    """Add whole calendar years to a date.
+
+    Clamps Feb 29 to Feb 28 when the target year isn't a leap year, so the
+    result is always a valid calendar date rather than raising.
+    """
+    try:
+        return value.replace(year=value.year + years)
+    except ValueError:
+        return date(value.year + years, 2, 28)
 
 
 def _financial_year_start_month(tax_jurisdiction: str | None) -> int:
@@ -133,7 +144,6 @@ async def get_income_expenses(
     days: Optional[int] = Query(None, ge=1, le=730),
     start_date: date | None = Query(None),
     end_date: date | None = Query(None),
-    compare: str | None = Query(None, pattern="^(previous|year_ago)$"),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -142,9 +152,6 @@ async def get_income_expenses(
     Alternatively `start_date`/`end_date` (both required together) pin the
     window to an explicit historical calendar range, overriding `months`,
     `period`, and `days`. Custom ranges include actuals only, without estimates.
-    `compare` adds a `comparison` block for the same-length window just before
-    (`previous`) or the same window one year earlier (`year_ago`). The
-    comparison window never includes estimates.
     """
     financial_year_start_month = _financial_year_start_month(ctx.workspace.tax_jurisdiction)
     custom_start, custom_end = _resolve_custom_range(start_date, end_date)
@@ -157,7 +164,6 @@ async def get_income_expenses(
         account_ids=account_ids, period=effective_period, days=days,
         financial_year_start_month=financial_year_start_month,
         start_date=custom_start, end_date=custom_end,
-        compare=compare,
     )
 
 
