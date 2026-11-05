@@ -531,14 +531,15 @@ async def get_summary(
     # Use real-only totals (without projections) to avoid double-counting;
     # projections are added separately below via convert().
     monthly_income_primary = real_monthly_income
-    monthly_expenses_primary = abs(real_monthly_expenses)
+    monthly_expenses_primary = real_monthly_expenses
 
     # Use amount_primary sums for more accurate multi-currency income/expenses.
     # Same posted-only rule as the native-currency totals above.
     primary_result = await session.execute(
         select(
-            func.sum(case((Transaction.type == "credit", Transaction.amount_primary), else_=0)),
-            func.sum(case((Transaction.type == "debit", Transaction.amount_primary), else_=0)),
+            Transaction.category_id,
+            Transaction.type,
+            func.sum(Transaction.amount_primary),
         )
         .where(
             Transaction.workspace_id == workspace_id,
@@ -551,11 +552,17 @@ async def get_summary(
             Transaction.amount_primary.isnot(None),
             *acct_filter,
         )
+        .group_by(Transaction.category_id, Transaction.type)
     )
-    primary_row = primary_result.one()
-    if primary_row[0] is not None or primary_row[1] is not None:
-        monthly_income_primary = float(primary_row[0] or 0)
-        monthly_expenses_primary = abs(float(primary_row[1] or 0))
+    primary_rows = primary_result.all()
+    if primary_rows:
+        monthly_income_primary, monthly_expenses_primary = totals_by_side(
+            sides,
+            [
+                (cat_id, tx_type, abs(float(total or 0)))
+                for cat_id, tx_type, total in primary_rows
+            ],
+        )
 
     if not filtered:
         # Apply share-only offset in primary currency (FX-converted).
@@ -639,10 +646,11 @@ async def get_summary(
             session, Decimal(str(proj["amount"])),
             proj["currency"], primary_currency,
         )
-        if proj["type"] == "credit":
-            projected_income_primary += float(proj_converted)
-        else:
-            projected_expenses_primary += float(proj_converted)
+        proj_income, proj_expenses = totals_by_side(
+            sides, [(proj["category_id"], proj["type"], float(proj_converted))]
+        )
+        projected_income_primary += proj_income
+        projected_expenses_primary += proj_expenses
     for tx in forecast_transactions:
         if not _counts_as_user_pnl_row(tx):
             continue
@@ -655,10 +663,11 @@ async def get_summary(
         # Magnitude first: the owner's share can be negative, and abs() after
         # the fraction would flip it.
         forecast_converted = abs(forecast_converted) * forecast_fractions.get(tx.id, 1)
-        if tx.type == "credit":
-            projected_income_primary += float(forecast_converted)
-        else:
-            projected_expenses_primary += float(forecast_converted)
+        tx_income, tx_expenses = totals_by_side(
+            sides, [(tx.category_id, tx.type, float(forecast_converted))]
+        )
+        projected_income_primary += tx_income
+        projected_expenses_primary += tx_expenses
 
     # Aggregate the user's net pending balance across all groups they
     # participate in. We reuse the group balance computation so partial
@@ -677,12 +686,12 @@ async def get_summary(
         projected_balance=projected_balance,
         projected_balance_primary=round(projected_balance_primary, 2),
         balance_date=cutoff.isoformat(),
-        monthly_income=real_monthly_income,
-        monthly_expenses=abs(real_monthly_expenses),
+        monthly_income=round(real_monthly_income, 2),
+        monthly_expenses=round(real_monthly_expenses, 2),
         monthly_income_primary=round(monthly_income_primary, 2),
         monthly_expenses_primary=round(monthly_expenses_primary, 2),
-        projected_income=projected_monthly_income,
-        projected_expenses=abs(projected_monthly_expenses),
+        projected_income=round(projected_monthly_income, 2),
+        projected_expenses=round(projected_monthly_expenses, 2),
         projected_income_primary=round(projected_income_primary, 2),
         projected_expenses_primary=round(projected_expenses_primary, 2),
         accounts_count=accounts_count,
@@ -992,8 +1001,8 @@ async def get_spending_by_category(
             category_name=entry["name"],
             category_icon=entry["icon"],
             category_color=entry["color"],
-            total=entry["total"],
-            projected_total=max(projected_total, 0.0),
+            total=round(entry["total"], 2),
+            projected_total=round(max(projected_total, 0.0), 2),
             percentage=(entry["total"] / grand_total * 100) if grand_total else 0,
         ))
 
@@ -1115,8 +1124,8 @@ async def get_monthly_trend(
         adjusted.append(
             MonthlyTrend(
                 month=month_str,
-                income=income - own_inc + shared_inc,
-                expenses=expenses - own_exp + shared_exp,
+                income=round(income - own_inc + shared_inc, 2),
+                expenses=round(expenses - own_exp + shared_exp, 2),
             )
         )
 

@@ -1307,10 +1307,10 @@ async def get_account_summary(
         "account_id": account_id,
         "current_balance": current_balance,
         "opening_balance": opening_balance,
-        "monthly_income": monthly_income,
-        "monthly_expenses": monthly_expenses,
-        "projected_income": monthly_income + forecast_income,
-        "projected_expenses": monthly_expenses + forecast_expenses,
+        "monthly_income": round(monthly_income, 2),
+        "monthly_expenses": round(monthly_expenses, 2),
+        "projected_income": round(monthly_income + forecast_income, 2),
+        "projected_expenses": round(monthly_expenses + forecast_expenses, 2),
     }
 
 

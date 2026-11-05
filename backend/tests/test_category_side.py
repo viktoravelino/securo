@@ -127,3 +127,24 @@ async def test_income_expenses_report_nets_refund_in_totals_and_period_compositi
     assert [(c.label, c.group, c.value) for c in report.trend[-1].composition] == [
         ("Food", "expenses", 30.0)
     ]
+
+
+@pytest.mark.asyncio
+async def test_netted_totals_come_back_rounded_to_cents(
+    session: AsyncSession, test_user, test_workspace
+):
+    account = await _make_account(session, test_user.id)
+    food = await _make_category(session, test_user.id, "Food")
+    fun = await _make_category(session, test_user.id, "Fun")
+    today = date.today()
+    # 0.3 - 0.1 and 0.1 + 0.2 leave float residue unless the result is rounded.
+    await _add_txn(session, test_user.id, account.id, 0.3, "debit", today, category_id=food.id)
+    await _add_txn(session, test_user.id, account.id, 0.1, "credit", today, category_id=food.id)
+    await _add_txn(session, test_user.id, account.id, 0.1, "debit", today, category_id=fun.id)
+
+    summary = await get_summary(session, test_workspace.id, test_user.id)
+    assert summary.monthly_expenses == 0.3
+    assert summary.monthly_expenses_primary == 0.3
+
+    spending = await get_spending_by_category(session, test_workspace.id, test_user.id)
+    assert {s.category_name: s.total for s in spending} == {"Food": 0.2, "Fun": 0.1}
