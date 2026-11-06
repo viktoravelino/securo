@@ -5,15 +5,23 @@ Its `main` branch is the latest upstream release plus a few changes. It builds t
 
 ## What the fork adds
 
-Each change is a branch and an upstream PR. Our `main` gets each change as a cherry-pick on top of the release.
+- The Reports page has an Income Statement (DRE) tab. Files: `frontend/src/lib/income-statement.ts`, `frontend/src/components/reports/IncomeStatementTable.tsx`, and the per-period investments and category-group fields in `backend/app/services/report_service.py`.
+- Refunds net against their category. The fork uses upstream's refund model: a refund is a `credit` with a positive amount, usually in the purchase's category. The helper `backend/app/services/category_side.py` sets each category's side from the workspace history. When its debit volume is at least its credit volume, it is an expense category. Otherwise it is an income category. Per period, an expense category's value is debits minus credits, with no clamp at 0, so a month with only a refund shows a negative value. Uncategorized rows are not netted. The dashboard, reports, transaction summaries and account summaries use this helper. A credit card's refund counts in the bill only, not as income.
 
-- `fix/nginx-upload-limit`: the frontend nginx accepts request bodies up to 15 MB. The default of 1 MB blocks attachments.
-- `fix/negative-debits-inflow`: a debit with a negative amount, such as a refund or a repayment, counts as an inflow.
-- `feat/refund-transaction-type`: the transaction form has a Refund type. It depends on the previous change.
+Three paths exist only in the fork, so a merge from upstream never conflicts with them: `FORK.md`, `.github/workflows/lab-images.yml` and `lab/`.
 
-Two files exist only in the fork, so a merge from upstream never conflicts with them: `FORK.md` and `.github/workflows/lab-images.yml`.
+## Refund model history
 
-The feature branches start from upstream `main`, because upstream PRs need that base. A merge of them would bring unreleased upstream commits into our `main`, so cherry-pick instead.
+Until `v0.16.6-lab.2`, the fork modeled a refund as a `debit` with a negative amount. That model came from `fix/negative-debits-inflow`, the Refund transaction type, and a recurring refund fix. `v0.17.0-lab.1` dropped that model.
+
+`lab/convert-negative-amounts.sql` converts the old rows. A negative debit becomes a positive credit. A negative credit becomes a positive debit. The script changes manual rows outside transfer pairs, and recurring rules with a negative amount.
+
+Warning: until the script runs, the app shows the converted rows with the wrong sign.
+
+1. Let migrations 099-102 run on the lab database.
+2. Run `lab/convert-negative-amounts.sql` once, right after step 1.
+
+The script runs in a transaction. It fails if a negative amount is left, so a second run changes nothing.
 
 ## Why a release and not upstream main
 
@@ -23,16 +31,16 @@ Upstream releases about once a week, so the lab stays close to upstream.
 
 ## How the images get built
 
-Push a tag in the form `v<upstream version>-lab.<n>`, for example `v0.16.5-lab.1`.
+Push a tag in the form `v<upstream version>-lab.<n>`, for example `v0.17.0-lab.1`.
 The workflow `Lab images` then builds two images for `linux/amd64` and pushes them with `GITHUB_TOKEN`.
 The image tag is the git tag.
 
 | Image | Tag |
 |---|---|
-| `ghcr.io/viktoravelino/securo-backend` | `v0.16.5-lab.1` |
-| `ghcr.io/viktoravelino/securo-frontend` | `v0.16.5-lab.1` |
+| `ghcr.io/viktoravelino/securo-backend` | `v0.17.0-lab.1` |
+| `ghcr.io/viktoravelino/securo-frontend` | `v0.17.0-lab.1` |
 
-The app shows its version as `v0.16.5+lab.1`. The `+lab` form is semver build metadata, so the update banner only shows when upstream has a newer release.
+The app shows its version as `v0.17.0+lab.1`. The `+lab` form is semver build metadata, so the update banner only shows when upstream has a newer release.
 
 Increase `<n>` when you change our code on the same upstream release. Start again at `1` on a new upstream release.
 
@@ -43,11 +51,9 @@ A push made with `GITHUB_TOKEN` cannot change files in `.github/workflows/`, and
 
 1. Fetch upstream: `git fetch upstream --tags`.
 2. Merge the new release into `main`, for example `git merge v0.16.6`. Resolve conflicts if there are any.
-   When a feature branch gets a new commit, cherry-pick that commit into `main` too.
+   Conflicts are likely in the services that use `category_side.py` and in `reports.tsx`. Keep the netting in each spot.
 3. Run the checks. The frontend needs `npm ci`, `npm run lint`, `npm run build` and `npm test`. The backend needs `ruff check .`, `ty check .` and `pytest`.
 4. Tag `main`, for example `git tag v0.16.6-lab.1`.
 5. Push `main` and the tag: `git push origin main v0.16.6-lab.1`.
 6. Check that the workflow `Lab images` ends green.
 7. Set the new tag in the lab (`securo_tag` in `ansible/playbooks/apps.yml` of the homelab repo) and apply.
-
-When upstream merges one of our changes, the next merge can conflict in that code. Keep the upstream version, then check that no duplicate is left. Delete the merged feature branch.
