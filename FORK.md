@@ -32,7 +32,7 @@ Upstream releases about once a week, so the lab stays close to upstream.
 ## How the images get built
 
 Push a tag in the form `v<upstream version>-lab.<n>`, for example `v0.17.0-lab.1`.
-The workflow `Lab images` then builds two images for `linux/amd64` and pushes them with `GITHUB_TOKEN`.
+The workflow `Lab images` then builds two images for `linux/amd64` and `linux/arm64` and pushes them with `GITHUB_TOKEN`.
 The image tag is the git tag.
 
 | Image | Tag |
