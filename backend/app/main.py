@@ -5,6 +5,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core import redis as redis_core
+from app.core.database import get_async_session
 
 from app.api.accounts import router as accounts_router
 from app.api.budgets import router as budgets_router
@@ -238,6 +244,32 @@ if os.getenv("AGENTS_ENABLED", "false").strip().lower() in ("1", "true", "yes", 
         logger.exception("Agents feature flag is on but import failed; routes not mounted")
 
 
+HEALTH_CHECK_TIMEOUT_SECONDS = 3
+
+
 @app.get("/api/health")
-async def health_check():
-    return {"status": "healthy"}
+async def health_check(session: AsyncSession = Depends(get_async_session)):
+    """Report healthy only when PostgreSQL and Redis both answer.
+
+    Container healthchecks and uptime monitors call this route, so a dead
+    database must not pass. On failure it returns 503 and names the failing
+    dependency, without the error text, because the route is public.
+    """
+    checks: dict[str, str] = {}
+    try:
+        await asyncio.wait_for(session.execute(text("SELECT 1")), HEALTH_CHECK_TIMEOUT_SECONDS)
+        checks["database"] = "ok"
+    except Exception:
+        logger.warning("Health check: database did not answer", exc_info=True)
+        checks["database"] = "error"
+    try:
+        client = await redis_core.get_redis()
+        await asyncio.wait_for(client.ping(), HEALTH_CHECK_TIMEOUT_SECONDS)
+        checks["redis"] = "ok"
+    except Exception:
+        logger.warning("Health check: redis did not answer", exc_info=True)
+        checks["redis"] = "error"
+
+    if all(value == "ok" for value in checks.values()):
+        return {"status": "healthy"}
+    return JSONResponse(status_code=503, content={"status": "unhealthy", "checks": checks})
