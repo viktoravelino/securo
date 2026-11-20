@@ -3697,6 +3697,21 @@
       "hint": "Waar het geld van de maand naartoe ging, per categorie.",
       "total": "Totaal uitgegeven"
     },
+    "ranking": {
+      "title": "Uitgavenranglijst",
+      "hint": "Uitgaven van de maand per categorie, grootste eerst, met vorige maand en budget.",
+      "vsLastMonth": "{{percent}}% t.o.v. vorige maand",
+      "thisMonth": "Deze maand",
+      "lastMonth": "Vorige maand (volledig)",
+      "budget": "Budget",
+      "rowLabel": "{{name}}: {{amount}}, {{percent}}% van de uitgaven",
+      "rowPrevious": "vorige maand {{amount}}",
+      "rowBudget": "budget {{amount}}",
+      "spent": "Uitgegeven",
+      "projected": "Verwacht",
+      "lastMonthTotal": "Vorige maand: {{amount}}",
+      "refunds": "Terugbetalingen groter dan uitgaven: {{items}}"
+    },
     "monthResult": {
       "title": "Maandresultaat",
       "hint": "Inkomsten min uitgaven deze maand, vergeleken met vorige maand.",

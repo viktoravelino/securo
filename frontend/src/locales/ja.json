@@ -3695,6 +3695,21 @@
       "hint": "今月のお金の使い道をカテゴリ別に。",
       "total": "支出合計"
     },
+    "ranking": {
+      "title": "支出ランキング",
+      "hint": "今月の支出をカテゴリ別に多い順で表示し、先月と予算も示します。",
+      "vsLastMonth": "先月比 {{percent}}%",
+      "thisMonth": "今月",
+      "lastMonth": "先月（全体）",
+      "budget": "予算",
+      "rowLabel": "{{name}}: {{amount}}、支出の{{percent}}%",
+      "rowPrevious": "先月 {{amount}}",
+      "rowBudget": "予算 {{amount}}",
+      "spent": "支出済み",
+      "projected": "予定",
+      "lastMonthTotal": "先月: {{amount}}",
+      "refunds": "支出を上回る返金: {{items}}"
+    },
     "monthResult": {
       "title": "今月の収支",
       "hint": "今月の収入から支出を引いた額を先月と比較します。",

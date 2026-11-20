@@ -3831,6 +3831,21 @@
       "hint": "Na co poszły pieniądze w tym miesiącu, według kategorii.",
       "total": "Wydano łącznie"
     },
+    "ranking": {
+      "title": "Ranking wydatków",
+      "hint": "Wydatki miesiąca według kategorii, od największych, z poprzednim miesiącem i budżetem.",
+      "vsLastMonth": "{{percent}}% vs poprzedni miesiąc",
+      "thisMonth": "Ten miesiąc",
+      "lastMonth": "Poprzedni miesiąc (pełny)",
+      "budget": "Budżet",
+      "rowLabel": "{{name}}: {{amount}}, {{percent}}% wydatków",
+      "rowPrevious": "poprzedni miesiąc {{amount}}",
+      "rowBudget": "budżet {{amount}}",
+      "spent": "Wydano",
+      "projected": "Prognoza",
+      "lastMonthTotal": "Poprzedni miesiąc: {{amount}}",
+      "refunds": "Zwroty większe niż wydatki: {{items}}"
+    },
     "monthResult": {
       "title": "Wynik miesiąca",
       "hint": "Przychody minus wydatki w tym miesiącu, w porównaniu z poprzednim.",

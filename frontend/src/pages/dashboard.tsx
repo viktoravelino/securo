@@ -78,6 +78,7 @@ import {
   UpcomingWidget,
   type DashboardScope,
 } from '@/components/dashboard-widgets'
+import { SpendingRankingWidget } from '@/components/spending-ranking-widget'
 import { DASHBOARD_WIDGETS } from '@/lib/library'
 import { useLayout } from '@/hooks/use-layout'
 import { useEntryAvailability } from '@/hooks/use-entry-availability'
@@ -782,6 +783,7 @@ export default function DashboardPage() {
   const widgetContent: Record<string, ReactNode> = {
     'spending-pace': <SpendingPaceWidget scope={widgetScope} />,
     'spending-distribution': <SpendingDistributionWidget scope={widgetScope} />,
+    'spending-ranking': <SpendingRankingWidget scope={widgetScope} />,
     'month-result': <MonthResultWidget scope={widgetScope} />,
     upcoming: <UpcomingWidget scope={widgetScope} />,
     'credit-cards': <CreditCardsWidget scope={widgetScope} />,

@@ -3695,6 +3695,21 @@
       "hint": "Hová ment a hónap pénze, kategóriánként.",
       "total": "Összes kiadás"
     },
+    "ranking": {
+      "title": "Kiadási rangsor",
+      "hint": "A hónap kiadásai kategóriánként, a legnagyobbal kezdve, az előző hónappal és a költségvetéssel.",
+      "vsLastMonth": "{{percent}}% az előző hónaphoz képest",
+      "thisMonth": "Ez a hónap",
+      "lastMonth": "Előző hónap (teljes)",
+      "budget": "Költségvetés",
+      "rowLabel": "{{name}}: {{amount}}, a kiadások {{percent}}%-a",
+      "rowPrevious": "előző hónap {{amount}}",
+      "rowBudget": "költségvetés {{amount}}",
+      "spent": "Elköltve",
+      "projected": "Várható",
+      "lastMonthTotal": "Előző hónap: {{amount}}",
+      "refunds": "A kiadásnál nagyobb visszatérítések: {{items}}"
+    },
     "monthResult": {
       "title": "Havi eredmény",
       "hint": "Bevételek mínusz kiadások ebben a hónapban, az előzőhöz képest.",

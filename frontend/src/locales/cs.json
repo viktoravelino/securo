@@ -3881,6 +3881,21 @@
       "hint": "Kam šly peníze za měsíc, podle kategorií.",
       "total": "Celkem utraceno"
     },
+    "ranking": {
+      "title": "Žebříček výdajů",
+      "hint": "Výdaje za měsíc podle kategorie, od největších, s minulým měsícem a rozpočtem.",
+      "vsLastMonth": "{{percent}}% oproti minulému měsíci",
+      "thisMonth": "Tento měsíc",
+      "lastMonth": "Minulý měsíc (celý)",
+      "budget": "Rozpočet",
+      "rowLabel": "{{name}}: {{amount}}, {{percent}}% výdajů",
+      "rowPrevious": "minulý měsíc {{amount}}",
+      "rowBudget": "rozpočet {{amount}}",
+      "spent": "Utraceno",
+      "projected": "Předpoklad",
+      "lastMonthTotal": "Minulý měsíc: {{amount}}",
+      "refunds": "Vratky vyšší než výdaje: {{items}}"
+    },
     "monthResult": {
       "title": "Výsledek měsíce",
       "hint": "Příjmy minus výdaje tento měsíc ve srovnání s minulým.",

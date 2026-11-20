@@ -3865,6 +3865,21 @@
       "hint": "Kam išli peniaze za mesiac, podľa kategórií.",
       "total": "Spolu minuté"
     },
+    "ranking": {
+      "title": "Rebríček výdavkov",
+      "hint": "Výdavky za mesiac podľa kategórie, od najväčších, s minulým mesiacom a rozpočtom.",
+      "vsLastMonth": "{{percent}}% oproti minulému mesiacu",
+      "thisMonth": "Tento mesiac",
+      "lastMonth": "Minulý mesiac (celý)",
+      "budget": "Rozpočet",
+      "rowLabel": "{{name}}: {{amount}}, {{percent}}% výdavkov",
+      "rowPrevious": "minulý mesiac {{amount}}",
+      "rowBudget": "rozpočet {{amount}}",
+      "spent": "Minuté",
+      "projected": "Predpoklad",
+      "lastMonthTotal": "Minulý mesiac: {{amount}}",
+      "refunds": "Vrátenia vyššie ako výdavky: {{items}}"
+    },
     "monthResult": {
       "title": "Výsledok mesiaca",
       "hint": "Príjmy mínus výdavky tento mesiac v porovnaní s minulým.",

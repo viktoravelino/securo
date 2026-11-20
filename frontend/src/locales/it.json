@@ -3699,6 +3699,21 @@
       "hint": "Dove sono andati i soldi del mese, per categoria.",
       "total": "Totale speso"
     },
+    "ranking": {
+      "title": "Classifica delle spese",
+      "hint": "Spese del mese per categoria, dalla più alta alla più bassa, con il mese scorso e il budget.",
+      "vsLastMonth": "{{percent}}% rispetto al mese scorso",
+      "thisMonth": "Questo mese",
+      "lastMonth": "Mese scorso (intero)",
+      "budget": "Budget",
+      "rowLabel": "{{name}}: {{amount}}, {{percent}}% della spesa",
+      "rowPrevious": "mese scorso {{amount}}",
+      "rowBudget": "budget {{amount}}",
+      "spent": "Speso",
+      "projected": "Previsto",
+      "lastMonthTotal": "Mese scorso: {{amount}}",
+      "refunds": "Rimborsi superiori alla spesa: {{items}}"
+    },
     "monthResult": {
       "title": "Risultato del mese",
       "hint": "Entrate meno spese di questo mese, rispetto al mese scorso.",

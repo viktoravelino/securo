@@ -3695,6 +3695,21 @@
       "hint": "Where the month's money went, by category.",
       "total": "Total spent"
     },
+    "ranking": {
+      "title": "Spending ranking",
+      "hint": "This month's spending by category, largest first, against last month and budget.",
+      "vsLastMonth": "{{percent}}% vs last month",
+      "thisMonth": "This month",
+      "lastMonth": "Last month (full)",
+      "budget": "Budget",
+      "rowLabel": "{{name}}: {{amount}}, {{percent}}% of spending",
+      "rowPrevious": "last month {{amount}}",
+      "rowBudget": "budget {{amount}}",
+      "spent": "Spent",
+      "projected": "Projected",
+      "lastMonthTotal": "Last month: {{amount}}",
+      "refunds": "Refunds larger than spending: {{items}}"
+    },
     "monthResult": {
       "title": "Month result",
       "hint": "Income minus spending this month, compared with last month.",

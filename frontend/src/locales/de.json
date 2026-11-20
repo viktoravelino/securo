@@ -3696,6 +3696,21 @@
       "hint": "Wohin das Geld des Monats ging, nach Kategorie.",
       "total": "Gesamtausgaben"
     },
+    "ranking": {
+      "title": "Ausgaben-Ranking",
+      "hint": "Die Ausgaben des Monats nach Kategorie, größte zuerst, mit Vormonat und Budget.",
+      "vsLastMonth": "{{percent}}% ggü. Vormonat",
+      "thisMonth": "Dieser Monat",
+      "lastMonth": "Vormonat (ganz)",
+      "budget": "Budget",
+      "rowLabel": "{{name}}: {{amount}}, {{percent}}% der Ausgaben",
+      "rowPrevious": "Vormonat {{amount}}",
+      "rowBudget": "Budget {{amount}}",
+      "spent": "Ausgegeben",
+      "projected": "Prognose",
+      "lastMonthTotal": "Vormonat: {{amount}}",
+      "refunds": "Erstattungen größer als Ausgaben: {{items}}"
+    },
     "monthResult": {
       "title": "Monatsergebnis",
       "hint": "Einnahmen minus Ausgaben in diesem Monat, verglichen mit dem Vormonat.",

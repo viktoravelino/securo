@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { CalendarClock, CalendarRange, ChartColumnBig, ChartPie, ChartSpline, CreditCard, FileClock, FileSpreadsheet, Gauge, HandCoins, Hourglass, LayoutList, Network, PiggyBank, Receipt, Repeat, Scale, Sparkles, Table2, Tags, Target, TrendingUp, Wallet } from 'lucide-react'
+import { CalendarClock, CalendarRange, ChartBarDecreasing, ChartColumnBig, ChartPie, ChartSpline, CreditCard, FileClock, FileSpreadsheet, Gauge, HandCoins, Hourglass, LayoutList, Network, PiggyBank, Receipt, Repeat, Scale, Sparkles, Table2, Tags, Target, TrendingUp, Wallet } from 'lucide-react'
 
 import type { ModuleId } from '@/lib/modules'
 
@@ -56,6 +56,7 @@ export const DASHBOARD_WIDGETS: WidgetEntry[] = [
   { id: 'transactions', titleKey: 'dashboard.periodTransactions', descriptionKey: 'library.widget.transactionsHint', icon: LayoutList, span: 12, minSpan: 6 },
   { id: 'spending-pace', titleKey: 'widgets.spendingPace.title', descriptionKey: 'widgets.spendingPace.hint', icon: Gauge, span: 4, minSpan: 4, optional: true },
   { id: 'spending-distribution', titleKey: 'widgets.distribution.title', descriptionKey: 'widgets.distribution.hint', icon: ChartPie, span: 8, minSpan: 6, optional: true },
+  { id: 'spending-ranking', titleKey: 'widgets.ranking.title', descriptionKey: 'widgets.ranking.hint', icon: ChartBarDecreasing, span: 6, minSpan: 4, optional: true, tall: true },
   { id: 'month-result', titleKey: 'widgets.monthResult.title', descriptionKey: 'widgets.monthResult.hint', icon: Scale, span: 4, minSpan: 4, optional: true },
   { id: 'upcoming', titleKey: 'widgets.upcoming.title', descriptionKey: 'widgets.upcoming.hint', icon: CalendarClock, span: 4, minSpan: 4, optional: true },
   { id: 'credit-cards', titleKey: 'widgets.cards.title', descriptionKey: 'widgets.cards.hint', icon: CreditCard, span: 4, minSpan: 4, optional: true },

@@ -3720,6 +3720,21 @@
       "hint": "לאן הלך הכסף החודש, לפי קטגוריה.",
       "total": "סך ההוצאות"
     },
+    "ranking": {
+      "title": "דירוג הוצאות",
+      "hint": "הוצאות החודש לפי קטגוריה, מהגדולה לקטנה, לצד החודש הקודם והתקציב.",
+      "vsLastMonth": "{{percent}}% לעומת החודש הקודם",
+      "thisMonth": "החודש",
+      "lastMonth": "החודש הקודם (מלא)",
+      "budget": "תקציב",
+      "rowLabel": "{{name}}: {{amount}}, {{percent}}% מההוצאות",
+      "rowPrevious": "החודש הקודם {{amount}}",
+      "rowBudget": "תקציב {{amount}}",
+      "spent": "הוצא",
+      "projected": "צפוי",
+      "lastMonthTotal": "החודש הקודם: {{amount}}",
+      "refunds": "החזרים גדולים מההוצאות: {{items}}"
+    },
     "monthResult": {
       "title": "תוצאת החודש",
       "hint": "הכנסות פחות הוצאות החודש, בהשוואה לחודש שעבר.",

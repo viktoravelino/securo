@@ -3699,6 +3699,21 @@
       "hint": "Où est passé l'argent du mois, par catégorie.",
       "total": "Total dépensé"
     },
+    "ranking": {
+      "title": "Classement des dépenses",
+      "hint": "Dépenses du mois par catégorie, de la plus élevée à la plus faible, avec le mois dernier et le budget.",
+      "vsLastMonth": "{{percent}}% vs mois dernier",
+      "thisMonth": "Ce mois-ci",
+      "lastMonth": "Mois dernier (complet)",
+      "budget": "Budget",
+      "rowLabel": "{{name}} : {{amount}}, {{percent}}% des dépenses",
+      "rowPrevious": "mois dernier {{amount}}",
+      "rowBudget": "budget {{amount}}",
+      "spent": "Dépensé",
+      "projected": "Prévu",
+      "lastMonthTotal": "Mois dernier : {{amount}}",
+      "refunds": "Remboursements supérieurs aux dépenses : {{items}}"
+    },
     "monthResult": {
       "title": "Résultat du mois",
       "hint": "Revenus moins dépenses ce mois-ci, comparé au mois dernier.",

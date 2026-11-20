@@ -3699,6 +3699,21 @@
       "hint": "A dónde fue el dinero del mes, por categoría.",
       "total": "Total gastado"
     },
+    "ranking": {
+      "title": "Ranking de gastos",
+      "hint": "Gasto del mes por categoría, de mayor a menor, con el mes pasado y el presupuesto.",
+      "vsLastMonth": "{{percent}}% vs mes pasado",
+      "thisMonth": "Este mes",
+      "lastMonth": "Mes pasado (completo)",
+      "budget": "Presupuesto",
+      "rowLabel": "{{name}}: {{amount}}, {{percent}}% del gasto",
+      "rowPrevious": "mes pasado {{amount}}",
+      "rowBudget": "presupuesto {{amount}}",
+      "spent": "Gastado",
+      "projected": "Proyectado",
+      "lastMonthTotal": "Mes pasado: {{amount}}",
+      "refunds": "Reembolsos mayores que el gasto: {{items}}"
+    },
     "monthResult": {
       "title": "Resultado del mes",
       "hint": "Ingresos menos gastos este mes, comparado con el mes pasado.",

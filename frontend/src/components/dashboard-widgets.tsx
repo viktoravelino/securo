@@ -36,7 +36,7 @@ export interface DashboardScope {
   currency: string
 }
 
-function WidgetCard({ title, action, children, className }: { title: string; action?: ReactNode; children: ReactNode; className?: string }) {
+export function WidgetCard({ title, action, children, className }: { title: string; action?: ReactNode; children: ReactNode; className?: string }) {
   return (
     <div className={cn('@container flex flex-col rounded-xl border border-border bg-card shadow-sm', className)}>
       <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-4">
@@ -56,12 +56,12 @@ function CardLink({ to, label }: { to: string; label: string }) {
   )
 }
 
-function Empty({ children }: { children: ReactNode }) {
+export function Empty({ children }: { children: ReactNode }) {
   return <p className="flex flex-1 items-center justify-center py-6 text-center text-sm text-muted-foreground">{children}</p>
 }
 
 /** A load that failed: said so, with a retry, never shown as an empty result. */
-function Failed({ onRetry }: { onRetry: () => void }) {
+export function Failed({ onRetry }: { onRetry: () => void }) {
   const { t } = useTranslation()
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-2 py-6 text-center">
