@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
+from app.models.account_reserved_balance import AccountReservedBalance
 from app.models.asset import Asset
 from app.models.asset_value import AssetValue
 from app.models.bank_connection import BankConnection
@@ -826,11 +827,11 @@ async def _make_manual_account(session, user_id, name, currency="BRL", acct_type
     return acct
 
 
-async def _add_txn(session, user_id, account_id, amount, txn_type, txn_date, source="manual"):
+async def _add_txn(session, user_id, account_id, amount, txn_type, txn_date, source="manual", currency="BRL"):
     txn = Transaction(
         id=uuid.uuid4(), user_id=user_id, account_id=account_id,
         description=f"Test {txn_type}", amount=Decimal(str(amount)),
-        date=txn_date, type=txn_type, source=source, currency="BRL",
+        date=txn_date, type=txn_type, source=source, currency=currency,
         created_at=datetime.now(timezone.utc),
     )
     session.add(txn)
@@ -927,6 +928,38 @@ async def test_asset_value_at_purchase_date_after_cutoff(session: AsyncSession, 
 
 
 @pytest.mark.asyncio
+async def test_net_worth_counts_asset_sold_after_the_cutoff(
+    session: AsyncSession, test_user, test_workspace: User,
+):
+    """A snapshot taken before an asset was sold still holds it."""
+    asset = Asset(
+        id=uuid.uuid4(), user_id=test_user.id, workspace_id=test_workspace.id,
+        name="Sold Car", type="vehicle", currency="BRL", valuation_method="manual",
+        purchase_date=date(2025, 1, 10), purchase_price=Decimal("30000"),
+        sell_date=date(2025, 3, 15), sell_price=Decimal("28000"),
+    )
+    session.add(asset)
+    await session.flush()
+    session.add(AssetValue(
+        id=uuid.uuid4(), asset_id=asset.id,
+        amount=Decimal("29000"), date=date(2025, 2, 1), source="manual",
+    ))
+    await session.commit()
+
+    before = await _net_worth_at(session, test_workspace.id, date(2025, 2, 28), "BRL")
+    assert before.breakdowns["assets"] == 29000.0
+    assert before.value == 29000.0
+    assert [c.key for c in before.composition if c.group == "assets"] == [str(asset.id)]
+
+    # From the day it is sold, the asset is gone from net worth.
+    on_sale = await _net_worth_at(session, test_workspace.id, date(2025, 3, 15), "BRL")
+    assert on_sale.breakdowns["assets"] == 0.0
+    after = await _net_worth_at(session, test_workspace.id, date(2025, 3, 31), "BRL")
+    assert after.breakdowns["assets"] == 0.0
+    assert await _asset_value_at(session, test_workspace.id, date(2025, 2, 28), "BRL") == 29000.0
+
+
+@pytest.mark.asyncio
 async def test_net_worth_with_credit_card(session: AsyncSession, test_user, test_workspace: User):
     checking = await _make_manual_account(session, test_user.id, "NW Check")
     await _add_txn(session, test_user.id, checking.id, 5000, "credit", date.today())
@@ -951,6 +984,70 @@ async def test_net_worth_with_credit_card(session: AsyncSession, test_user, test
     assert dp.breakdowns["accounts"] == 5000.0
     assert dp.breakdowns["liabilities"] == 1000.0
     assert dp.value == 4000.0
+
+
+# --- reserved balances (ADR 0022) -----------------------------------------
+
+
+async def _add_reserved_balance(
+    session, workspace_id, account_id, external_id, amount, currency="BRL",
+):
+    row = AccountReservedBalance(
+        id=uuid.uuid4(), workspace_id=workspace_id, account_id=account_id,
+        external_id=external_id, name=None, currency=currency, amount=Decimal(amount),
+    )
+    session.add(row)
+    await session.commit()
+    return row
+
+
+async def _connected_account(session, user_id, workspace_id, balance, pockets):
+    conn = BankConnection(
+        id=uuid.uuid4(), user_id=user_id, provider="pluggy",
+        external_id=f"ext-{uuid.uuid4().hex[:8]}", institution_name="Mercado Pago",
+        credentials={}, status="active",
+        last_sync_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(conn)
+    await session.flush()
+    account = Account(
+        id=uuid.uuid4(), user_id=user_id, workspace_id=workspace_id, connection_id=conn.id,
+        name="Mercado Pago", type="checking", balance=Decimal(balance), currency="BRL",
+    )
+    session.add(account)
+    await session.commit()
+    for external_id, amount in pockets:
+        await _add_reserved_balance(session, workspace_id, account.id, external_id, amount)
+    return account
+
+
+@pytest.mark.asyncio
+async def test_net_worth_ignores_reserved_balances(
+    session: AsyncSession, test_user, test_workspace: User,
+):
+    """Loading reserve rows must not change net worth or its composition."""
+    account = await _connected_account(
+        session, test_user.id, test_workspace.id, "1000.00", [],
+    )
+    before = await _net_worth_at(session, test_workspace.id, date.today(), "BRL")
+    assert before.value == pytest.approx(1000.00)
+
+    for external_id, amount in (
+        ("emergency-fund", "0"),
+        ("round-up", "2000"),
+        ("marketplace", "2000"),
+    ):
+        await _add_reserved_balance(
+            session, test_workspace.id, account.id, external_id, amount
+        )
+    await session.refresh(account, attribute_names=["reserved_balances"])
+
+    after = await _net_worth_at(session, test_workspace.id, date.today(), "BRL")
+    assert after.value == pytest.approx(before.value)
+    assert after.breakdowns["accounts"] == pytest.approx(1000.00)
+    accounts_items = [c for c in after.composition if c.group == "accounts"]
+    assert [c.value for c in accounts_items] == [pytest.approx(1000.00)]
 
 
 async def _make_shared_credit_cards(session, user_id, workspace_id, balance):
@@ -1028,6 +1125,39 @@ async def test_net_worth_does_not_merge_a_retyped_shared_card(
 
 
 @pytest.mark.asyncio
+async def test_net_worth_connected_account_ignores_unconverted_foreign_activity(
+    session: AsyncSession, test_user, test_workspace: User
+):
+    """Provider balance minus activity after cutoff must not read CLP as BRL."""
+    conn = BankConnection(
+        id=uuid.uuid4(), user_id=test_user.id, provider="test",
+        external_id="ext-wise-nw", institution_name="Wise",
+        credentials={}, status="active",
+        last_sync_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(conn)
+    await session.flush()
+    account = Account(
+        id=uuid.uuid4(), user_id=test_user.id, connection_id=conn.id,
+        name="Wise BRL", type="checking", balance=Decimal("1.02"), currency="BRL",
+    )
+    session.add(account)
+    await session.commit()
+
+    await _add_txn(session, test_user.id, account.id, 100, "credit", date.today())
+    await _add_txn(
+        session, test_user.id, account.id, 700000, "credit", date.today(),
+        currency="CLP",
+    )
+
+    cutoff = date.today() - timedelta(days=30)
+    dp = await _net_worth_at(session, test_workspace.id, cutoff, "BRL")
+    assert dp.breakdowns["liabilities"] == pytest.approx(98.98)
+    assert dp.value == pytest.approx(-98.98)
+
+
+@pytest.mark.asyncio
 async def test_net_worth_with_assets(session: AsyncSession, test_user, test_workspace: User):
     checking = await _make_manual_account(session, test_user.id, "NW Assets Check")
     await _add_txn(session, test_user.id, checking.id, 3000, "credit", date.today())
@@ -1067,6 +1197,106 @@ async def test_net_worth_negative_account_in_composition(session: AsyncSession, 
     liability_items = [c for c in report.composition if c.group == "liabilities"]
     labels = [c.label for c in liability_items]
     assert "Overdrawn Acct" in labels
+
+
+@pytest.mark.asyncio
+async def test_net_worth_counts_a_card_in_credit_as_money_held(
+    session: AsyncSession, test_user, test_workspace: User,
+):
+    """A card paid past its debt adds to net worth, as on the dashboard."""
+    from app.services.dashboard_service import _balance_at
+
+    checking = await _make_manual_account(session, test_user.id, "NW Credit Check")
+    await _add_txn(session, test_user.id, checking.id, 5000, "credit", date.today())
+    card = await _make_manual_account(
+        session, test_user.id, "NW Card In Credit", acct_type="credit_card"
+    )
+    await _add_txn(session, test_user.id, card.id, 1000, "debit", date.today())
+    # The bill paid in full, then a 200.00 refund: the card owes nothing and
+    # holds 200.00 for the user.
+    await _add_txn(session, test_user.id, card.id, 1200, "credit", date.today())
+
+    dp = await _net_worth_at(session, test_workspace.id, date.today(), "BRL")
+
+    assert dp.breakdowns["liabilities"] == 0.0
+    assert dp.breakdowns["accounts"] == 5200.0
+    assert dp.value == 5200.0
+    assert dp.value == pytest.approx(
+        await _balance_at(session, test_workspace.id, date.today(), primary_currency_hint="BRL")
+    )
+    assert {(c.label, c.value, c.group) for c in dp.composition} == {
+        ("NW Credit Check", 5000.0, "accounts"),
+        ("NW Card In Credit", 200.0, "accounts"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_net_worth_counts_a_connected_card_in_credit_as_money_held(
+    session: AsyncSession, test_user, test_workspace: User,
+):
+    """A connected card whose provider balance is a credit adds to net worth."""
+    from app.services.dashboard_service import _balance_at
+
+    checking = await _make_manual_account(session, test_user.id, "NW Credit Check 2")
+    await _add_txn(session, test_user.id, checking.id, 5000, "credit", date.today())
+    conn = BankConnection(
+        id=uuid.uuid4(), user_id=test_user.id, provider="test",
+        external_id="ext-cc-in-credit", institution_name="CC",
+        credentials={}, status="active",
+        last_sync_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(conn)
+    await session.flush()
+    # Connected liabilities store debt as positive, so a credit is negative.
+    session.add(Account(
+        id=uuid.uuid4(), user_id=test_user.id, connection_id=conn.id,
+        name="CC In Credit", type="credit_card", balance=Decimal("-200"), currency="BRL",
+    ))
+    await session.commit()
+
+    dp = await _net_worth_at(session, test_workspace.id, date.today(), "BRL")
+
+    assert dp.breakdowns["liabilities"] == 0.0
+    assert dp.breakdowns["accounts"] == 5200.0
+    assert dp.value == 5200.0
+    assert dp.value == pytest.approx(
+        await _balance_at(session, test_workspace.id, date.today(), primary_currency_hint="BRL")
+    )
+    assert {(c.label, c.value, c.group) for c in dp.composition} == {
+        ("NW Credit Check 2", 5000.0, "accounts"),
+        ("CC In Credit", 200.0, "accounts"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_net_worth_counts_an_overpaid_manual_loan_as_money_held(
+    session: AsyncSession, test_user, test_workspace: User,
+):
+    """A manual loan paid past what was owed adds the overpayment to net worth."""
+    from app.services.dashboard_service import _balance_at
+
+    checking = await _make_manual_account(session, test_user.id, "NW Loan Check")
+    await _add_txn(session, test_user.id, checking.id, 5000, "credit", date.today())
+    loan = await _make_manual_account(
+        session, test_user.id, "NW Overpaid Loan", acct_type="loan"
+    )
+    await _add_txn(session, test_user.id, loan.id, 3000, "debit", date.today())
+    # The last payment was 200.00 more than what was left on the loan.
+    await _add_txn(session, test_user.id, loan.id, 3200, "credit", date.today())
+
+    dp = await _net_worth_at(session, test_workspace.id, date.today(), "BRL")
+
+    assert dp.breakdowns["liabilities"] == 0.0
+    assert dp.breakdowns["accounts"] == 5200.0
+    assert dp.value == 5200.0
+    assert dp.value == pytest.approx(
+        await _balance_at(session, test_workspace.id, date.today(), primary_currency_hint="BRL")
+    )
+    assert {(c.label, c.value, c.group) for c in dp.composition} == {
+        ("NW Loan Check", 5000.0, "accounts"),
+        ("NW Overpaid Loan", 200.0, "accounts"),
+    }
 
 
 # ---------------------------------------------------------------------------

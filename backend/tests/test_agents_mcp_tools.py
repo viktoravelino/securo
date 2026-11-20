@@ -6,6 +6,8 @@ dashboard) just check that the wrapper returns a serializable shape, not
 the full numeric correctness of those services.
 """
 import uuid
+from datetime import date, timedelta
+from decimal import Decimal
 
 import pytest
 import pytest_asyncio
@@ -13,6 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # Importing this package registers all tools into mcp_server.registry.REGISTRY.
 import mcp_server.tools  # noqa: F401
+from app.models.account import Account
+from app.models.transaction import Transaction
+from app.schemas.account import AccountCreate
+from app.services import account_service
 from mcp_server.auth import CallContext
 from mcp_server.registry import REGISTRY
 
@@ -49,6 +55,9 @@ def test_registry_contains_v1_tools():
         "propose_update_recurring_transaction",
         "propose_cancel_recurring_transaction",
         "propose_create_goal",
+        "propose_update_payee",
+        "propose_merge_payees",
+        "propose_create_payee",
         "search_knowledge_base",
         "list_recurring_transactions",
         "list_assets",
@@ -60,7 +69,15 @@ def test_registry_contains_v1_tools():
 
 
 def test_proposal_tools_marked_is_proposal():
-    for name in ("propose_categorize", "propose_create_category", "propose_create_budget", "propose_create_payee_rule"):
+    for name in (
+        "propose_categorize",
+        "propose_create_category",
+        "propose_create_budget",
+        "propose_create_payee_rule",
+        "propose_update_payee",
+        "propose_merge_payees",
+        "propose_create_payee",
+    ):
         spec = REGISTRY[name]
         assert spec.is_proposal, f"{name} should have is_proposal=True"
 
@@ -155,13 +172,12 @@ async def test_list_transactions_tx_type_filter(
 async def test_list_transactions_currency_filter_matches_native(
     session: AsyncSession, ctx: CallContext, test_transactions
 ):
-    """The Transaction.currency column defaults to USD in the fixture
-    (independent of the account's BRL currency), so 'USD' should return
+    """The fixture rows carry the account's currency, so 'BRL' should return
     everything and any narrower filter returns ≤ that count."""
     handler = REGISTRY["list_transactions"].handler
-    usd = await handler(session=session, ctx=ctx, currency="USD")
-    assert usd["total"] >= 1
-    assert all(x["currency"] == "USD" for x in usd["items"])
+    brl = await handler(session=session, ctx=ctx, currency="BRL")
+    assert brl["total"] >= 1
+    assert all(x["currency"] == "BRL" for x in brl["items"])
 
 
 async def test_list_transactions_currency_filter_returns_zero_for_unused(
@@ -180,8 +196,11 @@ async def test_list_transactions_currency_filter_is_case_insensitive(
     session: AsyncSession, ctx: CallContext, test_transactions
 ):
     handler = REGISTRY["list_transactions"].handler
-    a = await handler(session=session, ctx=ctx, currency="usd")
-    b = await handler(session=session, ctx=ctx, currency="USD")
+    a = await handler(session=session, ctx=ctx, currency="brl")
+    b = await handler(session=session, ctx=ctx, currency="BRL")
+    # Against the BRL fixture rows a nonempty result is what proves the
+    # match stayed case-insensitive; two empty results would prove nothing.
+    assert a["total"] >= 1
     assert a["total"] == b["total"]
 
 
@@ -219,6 +238,58 @@ async def test_list_recurring_transactions_returns_empty_dict_with_no_data(
     handler = REGISTRY["list_recurring_transactions"].handler
     r = await handler(session=session, ctx=ctx)
     assert r == {"items": [], "total": 0}
+
+
+async def test_list_accounts_reports_current_balance(
+    session: AsyncSession, ctx: CallContext, test_user, test_account, test_connection
+):
+    """A manual account's balance is its opening balance plus its
+    transactions, as on the Accounts page, not the stored opening amount."""
+    ws_id = test_account.workspace_id
+    manual = await account_service.create_account(
+        session,
+        ws_id,
+        test_user.id,
+        AccountCreate(name="Manual", type="checking", balance=Decimal("100.00"), currency="BRL"),
+    )
+    for amount, tx_type in (("50.00", "credit"), ("20.00", "debit")):
+        session.add(
+            Transaction(
+                id=uuid.uuid4(),
+                user_id=test_user.id,
+                workspace_id=ws_id,
+                account_id=manual.id,
+                description=f"Seeded {tx_type}",
+                amount=Decimal(amount),
+                date=date.today() - timedelta(days=1),
+                type=tx_type,
+                source="manual",
+                currency="BRL",
+            )
+        )
+    session.add(
+        Account(
+            id=uuid.uuid4(),
+            user_id=test_user.id,
+            workspace_id=ws_id,
+            connection_id=test_connection.id,
+            external_id="card-ext-1",
+            name="Connected Card",
+            type="credit_card",
+            balance=Decimal("300.00"),
+            currency="BRL",
+        )
+    )
+    await session.commit()
+
+    handler = REGISTRY["list_accounts"].handler
+    r = await handler(session=session, ctx=ctx)
+    balances = {item["name"]: item["balance"] for item in r["items"]}
+    assert balances["Manual"] == pytest.approx(130.00)
+    # A connected account reports what the bank sent, as before.
+    assert balances["Conta Corrente"] == pytest.approx(1500.00)
+    # A card is debt, so it comes back negative, as on the Accounts page.
+    assert balances["Connected Card"] == pytest.approx(-300.00)
 
 
 async def test_list_assets_empty(session: AsyncSession, ctx: CallContext):

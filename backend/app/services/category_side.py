@@ -21,7 +21,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.transaction import Transaction
-from app.services._query_filters import counts_as_user_pnl
+from app.services._query_filters import (
+    counts_as_user_pnl,
+    line_category_id,
+    line_primary_or_amount,
+    with_category_lines,
+)
 
 Side = Literal["income", "expenses"]
 
@@ -39,19 +44,26 @@ async def get_category_sides(
     """Return the side of every category that has posted P/L history.
 
     Uses the primary-currency amount (falling back to the native amount) so
-    mixed-currency volumes compare fairly.
+    mixed-currency volumes compare fairly. Split rows count per category line.
     """
-    amount = func.abs(func.coalesce(Transaction.amount_primary, Transaction.amount))
+    # A split row counts part by part, so each category line adds its own
+    # share to its own category.
+    part_category = line_category_id()
+    amount = func.abs(line_primary_or_amount())
     result = await session.execute(
-        select(Transaction.category_id, Transaction.type, func.sum(amount))
+        with_category_lines(
+            select(part_category, Transaction.type, func.sum(amount)).select_from(
+                Transaction
+            )
+        )
         .where(
             Transaction.workspace_id == workspace_id,
-            Transaction.category_id.is_not(None),
+            part_category.is_not(None),
             Transaction.source != "opening_balance",
             Transaction.status == "posted",
-            counts_as_user_pnl(),
+            counts_as_user_pnl(part_category),
         )
-        .group_by(Transaction.category_id, Transaction.type)
+        .group_by(part_category, Transaction.type)
     )
     volume: dict[uuid.UUID, dict[str, float]] = {}
     for category_id, tx_type, total in result.all():

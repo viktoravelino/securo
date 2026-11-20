@@ -9,6 +9,11 @@ import { monthLabel } from '@/lib/month-utils'
 import { renderWithProviders, t } from '@/test/utils'
 import type { Account, DashboardSummary } from '@/types'
 
+const layouts = vi.hoisted(() => ({
+  saved: {} as Record<string, { id: string }[] | null>,
+  saves: [] as { surface: string; ids: string[]; items: { id: string; span?: number }[] }[],
+}))
+
 const api = vi.hoisted(() => ({
   dashboard: {
     summary: vi.fn(),
@@ -30,6 +35,18 @@ const api = vi.hoisted(() => ({
   payees: { list: vi.fn() },
   rules: { create: vi.fn(), list: vi.fn() },
   settings: { attachments: vi.fn() },
+  // Nobody arranged anything: Securo's default layout. Tests that need one set `layouts.saved`.
+  uiLayouts: {
+    get: async () => ({ dashboard: null, reports: null, ...layouts.saved }),
+    // Like the server: what was saved is what the next read returns.
+    save: async (surface: string, items: { id: string; span?: number }[]) => {
+      layouts.saves.push({ surface, ids: items.map((item) => item.id), items })
+      layouts.saved = { ...layouts.saved, [surface]: items }
+    },
+    reset: async (surface: string) => {
+      layouts.saved = { ...layouts.saved, [surface]: null }
+    },
+  },
 }))
 
 vi.mock('@/lib/api', () => api)
@@ -49,8 +66,10 @@ vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({ user: { preferences } }),
 }))
 
+const collectionFilter = vi.hoisted(() => ({ activeAccountIds: null as string[] | null, activeWalletIds: null as string[] | null }))
+
 vi.mock('@/contexts/collection-filter-context', () => ({
-  useCollectionFilter: () => ({ activeAccountIds: null, activeWalletIds: null }),
+  useCollectionFilter: () => collectionFilter,
 }))
 
 function account(overrides: Partial<Account>): Account {
@@ -131,7 +150,11 @@ const summary: DashboardSummary = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  layouts.saved = {}
+  layouts.saves = []
   preferences.currency_display = 'USD'
+  collectionFilter.activeAccountIds = null
+  collectionFilter.activeWalletIds = null
   api.dashboard.summary.mockResolvedValue(summary)
   api.dashboard.spendingByCategory.mockResolvedValue([])
   api.dashboard.balanceHistory.mockResolvedValue({
@@ -244,6 +267,37 @@ it('shows the mortgage breakdown editor for a payment opened from the dashboard'
   expect(await screen.findByText(/Enter all parts in USD/)).toBeInTheDocument()
   expect(screen.getByLabelText(t('transactions.mortgagePrincipal'))).toBeInTheDocument()
   expect(screen.getByLabelText(t('transactions.mortgageInterest'))).toBeInTheDocument()
+})
+
+describe('Dashboard available balance with reserves', () => {
+  it.each([
+    { currency: 'USD', current_balance: 1000, balance_primary: null, expected: 1000 },
+    { currency: 'BRL', current_balance: 1000, balance_primary: 200, expected: 200 },
+    { currency: 'BRL', current_balance: 0, balance_primary: 0, expected: 0 },
+    { currency: 'EUR', current_balance: 1000, balance_primary: null, expected: 1000, fx_fallback: true },
+  ])('keeps reserves out of the headline, chip and breakdown: $currency / $current_balance', async (values) => {
+    collectionFilter.activeAccountIds = ['reserved', 'card']
+    api.accounts.list.mockResolvedValue([
+      account({ id: 'reserved', name: 'Reserved account', reserved_total: 4000, ...values }),
+      account({ id: 'outside', current_balance: 90000, reserved_total: 10000 }),
+      account({ id: 'card', type: 'credit_card', current_balance: -500 }),
+    ])
+    const { user } = renderWithProviders(
+      <TooltipProvider delayDuration={0}>
+        <DashboardPage />
+      </TooltipProvider>,
+    )
+
+    const chip = (await screen.findByText('Reserved account')).closest('a')!
+    const currency = values.balance_primary == null ? values.currency : 'USD'
+    expect(chip).toHaveTextContent(formatCurrency(values.expected, currency, 'en-US'))
+    const heading = screen.getByText(t('dashboard.availableBalance'))
+    expect(heading.nextElementSibling).toHaveTextContent(formatCurrency(values.expected, 'USD', 'en-US'))
+    await user.hover(screen.getByRole('button', { name: 'i' }))
+    const tooltip = await screen.findByRole('tooltip')
+    const row = within(tooltip).getByText(t('dashboard.availableBalance')).parentElement!
+    expect(row).toHaveTextContent(formatCurrency(values.expected, 'USD', 'en-US'))
+  })
 })
 
 describe('Dashboard available balance without an FX rate', () => {
@@ -479,8 +533,8 @@ describe('Dashboard balance comparisons', () => {
   })
 
   it.each([
-    { current: 100, median: 150, color: '#10B981', comparison: '$50.00 below the median ($150.00)' },
-    { current: -100, median: -150, color: '#F43F5E', comparison: '$50.00 above the median (-$150.00)' },
+    { current: 100, median: 150, color: 'var(--chart-income)', comparison: '$50.00 below the median ($150.00)' },
+    { current: -100, median: -150, color: 'var(--chart-expense)', comparison: '$50.00 above the median (-$150.00)' },
     { current: 0, median: 0, color: 'var(--muted-foreground)', comparison: 'equals the median ($0.00)' },
   ])('colors the tooltip by cumulative change $current, not its difference from the median', async ({
     current, median, color, comparison,
@@ -511,7 +565,7 @@ describe('Dashboard balance comparisons', () => {
     const medianLabel = within(chart).getByText(t('dashboard.balanceMedianLegend'), {
       selector: '.recharts-tooltip-item-name',
     })
-    expect(medianLabel.closest('li')).toHaveStyle({ color: '#94A3B8' })
+    expect(medianLabel.closest('li')).toHaveStyle({ color: 'var(--chart-muted)' })
   })
 
   it.each([
@@ -732,7 +786,10 @@ describe('Dashboard refresh button', () => {
 
     const refetch = vi.spyOn(queryClient, 'refetchQueries')
 
+    // The button waits out the first load, which follows the saved layout.
+    await screen.findByText(formatCurrency(500, 'USD', 'en-US'))
     const button = screen.getByRole('button', { name: 'Refresh' })
+    await waitFor(() => expect(button).toBeEnabled())
     await user.click(button)
 
     expect(refetch).toHaveBeenCalledTimes(1)
@@ -766,5 +823,88 @@ describe('Dashboard refresh button', () => {
       '2026-04-01', undefined, ['2026-02-01'],
     )
     expect(screen.getByTestId('location-search')).toHaveTextContent('comparison_month=2026-02')
+  })
+})
+
+
+it('keeps a wallet-only Expenses drill-down empty instead of querying all accounts', async () => {
+  collectionFilter.activeAccountIds = []
+  collectionFilter.activeWalletIds = ['wallet-1']
+  const { user } = renderWithProviders(<TooltipProvider><DashboardPage /></TooltipProvider>)
+  await user.click(await screen.findByRole('button', { name: /Expenses/ }))
+  const panel = screen.getByRole('complementary')
+  expect(await within(panel).findByText(t('dashboard.drillDownEmpty'))).toBeInTheDocument()
+  expect(api.transactions.list.mock.calls.some(([params]) => params?.user_pnl_only === true)).toBe(false)
+})
+
+
+it('identifies each category in its spending progress bar accessible name', async () => {
+  api.dashboard.spendingByCategory.mockResolvedValue([
+    { category_id: 'rent', category_name: 'Rent', projected_total: 450, total: 450 },
+    { category_id: 'food', category_name: 'Groceries', projected_total: 200, total: 200 },
+  ])
+  api.budgets.comparison.mockResolvedValue([
+    { category_id: 'rent', budget_amount: 900, percentage_used: 50, projected_prev_month_amount: 0 },
+    { category_id: 'food', budget_amount: 500, percentage_used: 40, projected_prev_month_amount: 0 },
+  ])
+  renderWithProviders(<TooltipProvider><DashboardPage /></TooltipProvider>)
+
+  expect(await screen.findByRole('progressbar', { name: `${t('dashboard.spendingByCategory')}: Rent` })).toHaveAttribute('aria-valuenow', '50')
+  expect(screen.getByRole('progressbar', { name: `${t('dashboard.spendingByCategory')}: Groceries` })).toHaveAttribute('aria-valuenow', '40')
+})
+
+describe('Dashboard arranged from the library', () => {
+  const regions = () => screen.getAllByRole('region').map((region) => region.getAttribute('aria-label'))
+
+  it("shows Securo's arrangement when nothing was saved", async () => {
+    renderWithProviders(<TooltipProvider><DashboardPage /></TooltipProvider>)
+    await screen.findByText(formatCurrency(500, 'USD', 'en-US'))
+    expect(regions()).toEqual([
+      t('library.widget.overview'),
+      t('library.widget.uncategorized'),
+      t('dashboard.spendingByCategory'),
+      t('dashboard.balanceFlow'),
+      t('dashboard.periodTransactions'),
+    ])
+  })
+
+  it('follows the saved order and loads nothing for a widget left out', async () => {
+    layouts.saved = { dashboard: [{ id: 'transactions' }, { id: 'overview' }] }
+    renderWithProviders(<TooltipProvider><DashboardPage /></TooltipProvider>)
+    await screen.findByText(formatCurrency(500, 'USD', 'en-US'))
+    await waitFor(() => expect(regions()).toEqual([t('dashboard.periodTransactions'), t('library.widget.overview')]))
+    expect(api.goals.summary).not.toHaveBeenCalled()
+    expect(api.dashboard.balanceHistory).not.toHaveBeenCalled()
+    expect(api.dashboard.balanceHistoryMonths).not.toHaveBeenCalled()
+    expect(api.dashboard.spendingByCategory).not.toHaveBeenCalled()
+    expect(api.budgets.comparison).not.toHaveBeenCalled()
+  })
+
+  it("leaves out a widget this workspace can't run, and keeps it in the saved arrangement", async () => {
+    // Saved where invoices are shown; this workspace doesn't show them.
+    layouts.saved = { dashboard: [{ id: 'overview' }, { id: 'receivables' }, { id: 'transactions' }] }
+    const { user } = renderWithProviders(<TooltipProvider><DashboardPage /></TooltipProvider>)
+    await screen.findByText(formatCurrency(500, 'USD', 'en-US'))
+    await waitFor(() => expect(regions()).toEqual([t('library.widget.overview'), t('dashboard.periodTransactions')]))
+
+    await user.click(screen.getByRole('button', { name: t('library.customizeDashboard') }))
+    expect(regions()).not.toContain(t('widgets.receivables.title'))
+    await user.click(screen.getByRole('button', { name: t('library.removeFrom.dashboard', { name: t('library.widget.overview') }) }))
+    await waitFor(() => expect(layouts.saves.at(-1)?.ids).toEqual(['transactions', 'receivables']))
+  })
+
+  it('saves a widget resized while customizing', async () => {
+    const { user } = renderWithProviders(<TooltipProvider><DashboardPage /></TooltipProvider>)
+    await screen.findByText(formatCurrency(500, 'USD', 'en-US'))
+    await user.click(screen.getByRole('button', { name: t('library.customizeDashboard') }))
+    expect(screen.getByText(t('library.editingDashboard'))).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: t('library.widthOf', { name: t('dashboard.spendingByCategory') }) }))
+    await user.click(screen.getByRole('menuitemradio', { name: t('library.width.8') }))
+    await waitFor(() => expect(layouts.saves.at(-1)?.items).toContainEqual({ id: 'spending-by-category', span: 8 }))
+    expect(screen.getByRole('region', { name: t('dashboard.spendingByCategory') })).toHaveClass('lg:col-span-8')
+
+    await user.click(screen.getByRole('button', { name: t('library.done') }))
+    expect(screen.queryByText(t('library.editingDashboard'))).not.toBeInTheDocument()
   })
 })
