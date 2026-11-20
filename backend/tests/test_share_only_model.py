@@ -926,7 +926,7 @@ async def test_negative_owner_forecast_reduces_but_never_inverts_a_category(
 ):
     """A pending row where the owner's share is -$20 lowers a category with
     $50 posted to $30 projected. A category with only that row projects
-    nothing instead of a negative amount, as posted spending would."""
+    -$20: the fork keeps net-negative categories so the list matches the summary."""
     await _force_user_currency(session, test_user, "USD")
     today = date.today()
     food, transport = test_categories[0], test_categories[1]
@@ -976,7 +976,9 @@ async def test_negative_owner_forecast_reduces_but_never_inverts_a_category(
     by_name = {s.category_name: s for s in spending}
     assert by_name["Alimentação"].total == pytest.approx(50.0, abs=0.01)
     assert by_name["Alimentação"].projected_total == pytest.approx(30.0, abs=0.01)
-    assert "Transporte" not in by_name
+    # The fork keeps a net-negative category so the list adds up to the summary.
+    assert by_name["Transporte"].total == pytest.approx(0.0, abs=0.01)
+    assert by_name["Transporte"].projected_total == pytest.approx(-20.0, abs=0.01)
 
     rows = await budget_service.get_budget_vs_actual(
         session, test_workspace.id, test_user.id, today.replace(day=1)

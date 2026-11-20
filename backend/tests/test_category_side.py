@@ -1,6 +1,6 @@
 """Refund netting: a credit in an expense category reduces that category's expenses."""
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -148,3 +148,26 @@ async def test_netted_totals_come_back_rounded_to_cents(
 
     spending = await get_spending_by_category(session, test_workspace.id, test_user.id)
     assert {s.category_name: s.total for s in spending} == {"Food": 0.2, "Fun": 0.1}
+
+
+@pytest.mark.asyncio
+async def test_spending_by_category_keeps_a_category_with_refunds_larger_than_spending(
+    session: AsyncSession, test_user, test_workspace
+):
+    account = await _make_account(session, test_user.id)
+    food = await _make_category(session, test_user.id, "Food")
+    fun = await _make_category(session, test_user.id, "Fun")
+    today = date.today()
+    await _add_txn(session, test_user.id, account.id, 100, "debit", today, category_id=food.id)
+    # An earlier month of debits keeps Fun an expense category by history.
+    await _add_txn(session, test_user.id, account.id, 500, "debit", today - timedelta(days=40), category_id=fun.id)
+    await _add_txn(session, test_user.id, account.id, 111.06, "debit", today, category_id=fun.id)
+    await _add_txn(session, test_user.id, account.id, 141.37, "credit", today, category_id=fun.id)
+
+    spending = await get_spending_by_category(session, test_workspace.id, test_user.id)
+    by_name = {s.category_name: s for s in spending}
+    assert by_name["Fun"].total == pytest.approx(-30.31)
+    assert by_name["Fun"].projected_total == pytest.approx(-30.31)
+
+    summary = await get_summary(session, test_workspace.id, test_user.id)
+    assert sum(s.total for s in spending) == pytest.approx(summary.monthly_expenses)

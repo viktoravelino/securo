@@ -1020,18 +1020,21 @@ async def get_spending_by_category(
     grand_total = sum(entry["total"] for entry in spending_map.values())
     spending = []
     for cat_id, entry in sorted(spending_map.items(), key=lambda x: x[1]["total"], reverse=True):
-        # A negative owner share can pull the projection below zero. Keep the
-        # category for its posted spending, but never project less than zero.
-        projected_total = entry["total"] + entry.get("projected", 0.0)
-        if projected_total <= 0 and entry["total"] <= 0:
+        # The fork nets refunds, so a category can be negative (refunds larger
+        # than spending). Keep it and return the negatives as they are, so the
+        # list adds up to the summary. Skip only a category that is 0.00 on
+        # both the posted and the projected figure.
+        projected_total = round(entry["total"] + entry.get("projected", 0.0), 2)
+        total = round(entry["total"], 2)
+        if projected_total == 0 and total == 0:
             continue
         spending.append(SpendingByCategory(
             category_id=cat_id,
             category_name=entry["name"],
             category_icon=entry["icon"],
             category_color=entry["color"],
-            total=round(entry["total"], 2),
-            projected_total=round(max(projected_total, 0.0), 2),
+            total=total,
+            projected_total=projected_total,
             percentage=(entry["total"] / grand_total * 100) if grand_total else 0,
         ))
 
